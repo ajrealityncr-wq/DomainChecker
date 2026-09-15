@@ -2,44 +2,61 @@
   "output_file": "domains.json",
   "candidate_count": 1000,
   "budget": {
-    "max_yearly_price": 2000,
+    "max_yearly_price": 5000,
+    "max_renewal_price": 6000,
     "currency": "INR"
   },
   "name_length": 4,
-  "tlds": [".com"],
+  "min_name_length": 4,
+  "max_name_length": 4,
+  "min_quality_score": -10,
+  "quality_floor": -10,
+  "premium_gate": {
+    "enabled": true,
+    "min_score": 18
+  },
+  "expand_tlds": false,
+  "tlds": [".com", ".in", ".ai", ".co"],
+  "preferred_tlds": [".com", ".in", ".ai", ".co"],
+  "allowed_tlds": [".com", ".in", ".ai", ".co"],
   "patterns": ["CVCV", "CVVC"],
   "consonants": "lmnrstvzkpbdghcfwy",
   "vowels": "aeiou",
   "preferred_starts": ["av", "ar", "el", "ev", "iv", "or", "ov", "va", "ve", "vi", "vo", "za", "ze", "zi", "zo", "no", "ne", "re", "ri", "ro", "se", "so", "te", "to"],
   "preferred_ends": ["ra", "re", "ri", "ro", "va", "ve", "vi", "vo", "la", "le", "li", "lo", "na", "ne", "ni", "no"],
-  "blocked_fragments": ["q", "x", "jj", "kk", "ww", "yy", "zz"],
+  "brand_keywords": ["nov", "ora", "nex", "zen", "rise", "nest", "vibe", "hub", "byte", "flow", "peak", "loop", "nova", "orbit", "mora", "luma", "vega", "zoe", "vera", "nora"],
+  "industry_keywords": ["ai", "fin", "care", "hub", "byte", "mobi", "net", "nova", "nest", "orbit", "logic", "peak", "rise"],
+  "avoid_words": ["admin", "demo", "fake", "spam", "care", "loan", "rent", "real", "home", "land", "test", "code", "hate", "sex", "zero"],
+  "blocked_fragments": ["q", "x", "jj", "kk", "ww", "yy", "zz", "cx", "qx"],
+  "blocked_brands": ["amazon", "google", "microsoft", "meta", "apple", "paypal", "netflix", "uber", "airbnb", "dropbox"],
+  "blocked_suffixes": ["inc", "llc", "corp", "tech", "media", "group", "solutions", "labs"],
   "reject_repeated_letters": true,
-  "blocked_names": [
-    "test",
-    "admin",
-    "demo",
-    "spam",
-    "fake",
-    "hate",
-    "sex",
-    "zero",
-    "code",
-    "care",
-    "dove",
-    "five",
-    "fire",
-    "fine",
-    "fuse",
-    "home",
-    "land",
-    "loan",
-    "rent",
-    "real",
-    "sora",
-    "viva"
-  ],
+  "prefer_unique_letters": true,
+  "prefer_easy_pronunciation": true,
   "require_alternating_phonetics": true,
   "lowercase": true,
   "deduplicate": true,
-  "review_only": true
+  "review_only": true,
+  "full_business_filter": true,
+  "brand": {
+    "industry": "general",
+    "keywords": ["nova", "loop", "peak", "orbit", "nest", "vibe", "byte", "hub"],
+    "style": "premium",
+    "avoid_words": ["admin", "demo", "spam", "fake", "care", "loan", "rent", "real", "home", "land", "test", "code"]
+  },
+  "legal": {
+    "blocked_terms": ["admin", "demo", "spam", "fake", "test", "hate", "sex", "zero", "code"],
+    "blocked_suffixes": ["inc", "llc", "corp", "labs", "media", "group", "solutions"]
+  },
+  "output": {
+    "save_markdown": true,
+    "save_csv": true,
+    "save_json": true,
+    "save_top_n_only": 200
+  },
+  "api": {
+    "recheck_days": 7,
+    "retry_backoff_seconds": 2,
+    "max_retries": 5
+  }
 }

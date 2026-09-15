@@ -26,7 +26,7 @@ The default input is `domains.json`. It can be an array or `{"domains": [...]}`.
 
 Edit `domain_generation_config.json` to control the business-oriented candidate pool. You can change the candidate count, TLD, phonetic patterns, vowels, consonants, blocked names, and the target budget metadata. The generator creates review-only names and does not claim availability.
 
-The current strict purchase filter is `INR 2,000 per year`. It is enforced by `config.json`: a domain must be confirmed available by GoDaddy, include a returned price, use INR, and have a price no higher than 2,000. Missing prices are excluded.
+The premium candidate gate requires a score of at least 18 from the phonetic, spelling, uniqueness, brand, industry, and legal filters. The strict purchase filter is `INR 5,000` for first-year registration and `INR 6,000` for renewal. A domain must be confirmed available by GoDaddy, include a returned price, use INR, and meet the configured budget. Renewal price is preserved when the API supplies it; it can be made mandatory with `budget.require_renewal_price`.
 
 ```powershell
 python generate_domains.py
@@ -55,7 +55,7 @@ Dry run performs no network request. Test mode checks one valid domain through t
 
 ## Outputs
 
-Results are written under `output/`: available, taken, invalid, error, unchecked, CSV/JSON, `domain_results.md`, `available_domains.md`, `budget_available_domains.md`, `BUY_NOW.txt`, `summary.json`, and `checker.log`. Markdown is the default report format and contains readable tables with status, reason, availability, price, currency, and check time. `available_domains.md` contains all API-confirmed available domains. `budget_available_domains.md` and `BUY_NOW.txt` contain only API-confirmed available domains with a known API price in the required currency and at or below the configured budget. Missing prices and currency mismatches are excluded. Prices are indicative API prices and must be verified at checkout. Excel output is disabled by default and can be re-enabled with `save_excel`.
+Results are written under `output/`: available, taken, invalid, error, unchecked, CSV/JSON, `domain_results.md`, `available_domains.md`, `budget_available_domains.md`, `BUY_NOW.txt`, `summary.json`, and `checker.log`. Reports preserve price, renewal price, currency, premium, definitive, and status fields when GoDaddy supplies them. `available_domains.md` contains all API-confirmed available domains. `budget_available_domains.md` and `BUY_NOW.txt` contain only API-confirmed available domains with a known API price in the required currency and at or below the configured budget. Missing prices and currency mismatches are excluded. Prices are indicative API prices and must be verified at checkout. Excel output is disabled by default and can be re-enabled with `save_excel`.
 
 Authentication failures stop clearly; temporary network failures, HTTP 408/429/5xx responses, and timeouts retry with exponential backoff. A failed batch is never marked as successfully processed. Malformed or incomplete API responses are treated as errors, never as availability.
 

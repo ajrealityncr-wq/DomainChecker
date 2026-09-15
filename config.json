@@ -23,10 +23,82 @@
   "secrets_file": "GODADDY_PAT.json",
   "strip_protocol": true,
   "remove_www": false,
-  "allowed_tlds": [],
-  "max_price": 2000,
+  "allowed_tlds": [".com", ".in", ".ai", ".co"],
+  "max_price": 5000,
   "max_price_currency": "INR",
   "sort_available_by": "domain",
+  "premium_gate": {
+    "enabled": true,
+    "min_score": 18,
+    "require_known_price": true,
+    "require_renewal_price": false,
+    "preserve_registrar_premium": true
+  },
+  "budget": {
+    "max_yearly_price": 5000,
+    "max_renewal_price": 6000,
+    "currency": "INR",
+    "strict_mode": true,
+    "require_api_price": true,
+    "require_renewal_price": false
+  },
+  "tld_strategy": {
+    "preferred": [".com", ".in", ".ai", ".co"],
+    "premium_only": true,
+    "avoid": [".xyz", ".club", ".shop", ".info"],
+    "preferred_by_region": {
+      "india": [".in", ".com"],
+      "global": [".com", ".ai", ".co"]
+    }
+  },
+  "brand": {
+    "keywords": ["nova", "loop", "peak", "orbit", "nest", "vibe", "byte", "hub", "zen", "rise"],
+    "avoid_words": ["admin", "demo", "spam", "fake", "care", "loan", "rent", "real", "home", "land", "test", "code"],
+    "blocked_brands": ["amazon", "google", "microsoft", "meta", "apple", "paypal", "netflix", "uber", "airbnb", "dropbox"],
+    "preferred_style": "premium"
+  },
+  "quality": {
+    "min_score": -10,
+    "prefer_unique_letters": true,
+    "prefer_easy_pronunciation": true,
+    "require_alternating_phonetics": true,
+    "min_brand_score": 60,
+    "prefer_short_names": true,
+    "prefer_memorable": true,
+    "max_length": 12
+  },
+  "legal": {
+    "blocked_suffixes": ["inc", "llc", "corp", "labs", "media", "group", "solutions"],
+    "blocked_terms": ["admin", "demo", "spam", "fake", "test", "hate", "sex", "zero", "code"],
+    "strict_mode": true
+  },
+  "niche_targeting": {
+    "industry": "general",
+    "keywords": ["nova", "loop", "peak", "orbit", "nest", "vibe", "byte", "hub"],
+    "preferred_style": "premium",
+    "avoid_generic_words": true
+  },
+  "output": {
+    "save_markdown": true,
+    "save_csv": true,
+    "save_json": true,
+    "save_excel": false,
+    "save_buy_now": true,
+    "save_top_n_only": 200,
+    "include_reason_for_rejection": true
+  },
+  "api": {
+    "recheck_days": 7,
+    "retry_backoff_seconds": 2,
+    "max_retries": 5,
+    "pause_between_batches_seconds": 1,
+    "max_api_calls_per_hour": null
+  },
+  "recheck": {
+    "enabled": true,
+    "only_if_missing": true,
+    "force_recheck": false
+  },
   "godaddy": {
     "base_url": "https://api.godaddy.com",
     "availability_endpoint": "/v3/domains/check-availability",

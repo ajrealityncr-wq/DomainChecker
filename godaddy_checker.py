@@ -30,8 +30,8 @@ DOMAIN_RE = re.compile(
     re.IGNORECASE,
 )
 RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
-CSV_FIELDS = ["domain", "available", "price", "currency", "checked_at"]
-EXCEL_HEADERS = ["input_domain", "domain", "status", "reason", "available", "price", "currency", "checked_at", "error"]
+CSV_FIELDS = ["domain", "available", "price", "renewal_price", "currency", "premium", "definitive", "status", "checked_at"]
+EXCEL_HEADERS = ["input_domain", "domain", "status", "reason", "available", "price", "renewal_price", "currency", "premium", "definitive", "checked_at", "error"]
 
 
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -79,7 +79,12 @@ class CheckResult:
     domain: str
     available: bool | None
     price: Any = None
+    renewal_price: Any = None
     currency: str | None = None
+    premium: Any = None
+    definitive: Any = None
+    status: str | None = None
+    restrictions: Any = None
     checked_at: str = ""
     error: str | None = None
     api_success: bool = False
@@ -267,7 +272,20 @@ def parse_response(items: list[Any], requested: list[str]) -> tuple[list[CheckRe
         available = item.get("available")
         if not isinstance(available, bool):
             return [], f"missing or invalid availability for {domain}"
-        results.append(CheckResult(domain=domain, available=available, price=item.get("price"), currency=item.get("currency"), checked_at=utc_now(), api_success=True, raw=item))
+        results.append(CheckResult(
+            domain=domain,
+            available=available,
+            price=item.get("price"),
+            renewal_price=item.get("renewalPrice", item.get("renewal_price")),
+            currency=item.get("currency"),
+            premium=item.get("premium"),
+            definitive=item.get("definitive"),
+            status=item.get("status"),
+            restrictions=item.get("restrictions"),
+            checked_at=utc_now(),
+            api_success=True,
+            raw=item,
+        ))
     missing = requested_set - returned
     if missing:
         return [], f"response omitted domains: {', '.join(sorted(missing))}"
@@ -325,7 +343,7 @@ def markdown_value(value: Any) -> str:
 
 
 def write_markdown(path: Path, title: str, rows: list[dict[str, Any]]) -> None:
-    headers = ["Domain", "Status", "Reason", "Available", "Price", "Currency", "Checked At", "Error"]
+    headers = ["Domain", "Status", "Reason", "Available", "Price", "Renewal Price", "Currency", "Premium", "Definitive", "Checked At", "Error"]
     lines = [
         f"# {title}",
         "",
@@ -341,7 +359,10 @@ def write_markdown(path: Path, title: str, rows: list[dict[str, Any]]) -> None:
             markdown_value(row.get("reason")),
             markdown_value(row.get("available")),
             markdown_value(row.get("price")),
+            markdown_value(row.get("renewal_price")),
             markdown_value(row.get("currency")),
+            markdown_value(row.get("premium")),
+            markdown_value(row.get("definitive")),
             markdown_value(row.get("checked_at")),
             markdown_value(row.get("error")),
         ]) + " |")
@@ -387,18 +408,29 @@ def write_excel(path: Path, rows: list[dict[str, Any]]) -> None:
 
 
 def meets_budget(record: dict[str, Any], config: dict[str, Any]) -> bool:
-    max_price = config.get("max_price")
-    required_currency = config.get("max_price_currency")
-    if max_price is None:
+    budget = config.get("budget", {})
+    max_price = budget.get("max_yearly_price", config.get("max_price")) if isinstance(budget, dict) else config.get("max_price")
+    max_renewal = budget.get("max_renewal_price") if isinstance(budget, dict) else None
+    required_currency = budget.get("currency", config.get("max_price_currency")) if isinstance(budget, dict) else config.get("max_price_currency")
+    if max_price is None and max_renewal is None:
         return True
     price = record.get("price")
     currency = record.get("currency")
-    return (
+    registration_ok = (
         price is not None
         and currency is not None
         and str(currency).upper() == str(required_currency).upper()
         and isinstance(price, (int, float))
-        and price <= float(max_price)
+        and (max_price is None or price <= float(max_price))
+    )
+    if not registration_ok:
+        return False
+    renewal_price = record.get("renewal_price")
+    require_renewal = bool(budget.get("require_renewal_price", False)) if isinstance(budget, dict) else False
+    return (
+        not max_renewal
+        or (isinstance(renewal_price, (int, float)) and renewal_price <= float(max_renewal))
+        or not require_renewal
     )
 
 
@@ -451,7 +483,10 @@ def save_outputs(root: Path, config: dict[str, Any], valid: list[str], invalid: 
             "reason": reason,
             "available": result.available if result else "",
             "price": result.price if result else "",
+            "renewal_price": result.renewal_price if result else "",
             "currency": result.currency if result else "",
+            "premium": result.premium if result else "",
+            "definitive": result.definitive if result else "",
             "checked_at": result.checked_at if result else (error or {}).get("checked_at", ""),
             "error": (error or {}).get("error", ""),
         })
@@ -600,7 +635,7 @@ def main() -> int:
     checkpoint_file = checkpoint_path(config, root)
     checkpoint = load_checkpoint(checkpoint_file) if config.get("resume_enabled") and not args.force_recheck else {"processed": {}, "api_requests": 0}
     processed: dict[str, dict[str, Any]] = checkpoint.setdefault("processed", {})
-    results = [CheckResult(**{key: value for key, value in record.items() if key in {"domain", "available", "price", "currency", "checked_at", "error", "api_success"}}) for record in processed.values() if record.get("available") in {True, False}]
+    results = [CheckResult(**{key: value for key, value in record.items() if key in {"domain", "available", "price", "renewal_price", "currency", "premium", "definitive", "status", "restrictions", "checked_at", "error", "api_success"}}) for record in processed.values() if record.get("available") in {True, False}]
     errors = list(checkpoint.get("errors", []))
     unchecked: list[str] = []
     requests_made = int(checkpoint.get("api_requests", 0))
