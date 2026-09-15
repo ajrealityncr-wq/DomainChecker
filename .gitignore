@@ -1,0 +1,8 @@
+.env
+secrets.json
+GODADDY_PAT.json
+__pycache__/
+*.pyc
+checkpoint.json
+output/
+.venv/

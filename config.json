@@ -1,0 +1,40 @@
+{
+  "input_file": "domains.json",
+  "output_directory": "output",
+  "batch_size": 25,
+  "optimize_for": "ACCURACY",
+  "timeout_seconds": 30,
+  "delay_between_batches_seconds": 1,
+  "max_retries": 5,
+  "retry_backoff_seconds": 2,
+  "resume_enabled": true,
+  "checkpoint_file": "checkpoint.json",
+  "normalize_domains": true,
+  "remove_duplicates": true,
+  "validate_domains": true,
+  "save_csv": true,
+  "save_excel": false,
+  "save_markdown": true,
+  "save_json": true,
+  "save_buy_now": true,
+  "save_logs": true,
+  "log_level": "INFO",
+  "godaddy_pat": null,
+  "secrets_file": "GODADDY_PAT.json",
+  "strip_protocol": true,
+  "remove_www": false,
+  "allowed_tlds": [],
+  "max_price": 2000,
+  "max_price_currency": "INR",
+  "sort_available_by": "domain",
+  "godaddy": {
+    "base_url": "https://api.godaddy.com",
+    "availability_endpoint": "/v3/domains/check-availability",
+    "optimize_for": "ACCURACY"
+  },
+  "buy_now": {
+    "enabled": true,
+    "require_available": true,
+    "require_api_success": true
+  }
+}
