@@ -15,6 +15,14 @@
     "enabled": true,
     "min_score": 18
   },
+  "industry": "real_estate",
+  "industry_profiles": {
+    "general": ["nova", "loop", "peak", "orbit", "nest", "vibe", "byte", "hub"],
+    "real_estate": ["nest", "home", "land", "prop", "urban", "rise", "roof", "peak"],
+    "proptech": ["prop", "nest", "byte", "data", "grid", "home", "urban", "logic"],
+    "technology": ["byte", "data", "code", "grid", "logic", "node", "nova", "peak"],
+    "finance": ["fund", "gain", "cash", "rise", "peak", "fin", "vault", "nest"]
+  },
   "expand_tlds": false,
   "tlds": [".com", ".in", ".ai", ".co"],
   "preferred_tlds": [".com", ".in", ".ai", ".co"],

@@ -24,7 +24,7 @@ The default input is `domains.json`. It can be an array or `{"domains": [...]}`.
 
 ## Generate Candidate Domains
 
-Edit `domain_generation_config.json` to control the business-oriented candidate pool. You can change the candidate count, TLD, phonetic patterns, vowels, consonants, blocked names, and the target budget metadata. The generator creates review-only names and does not claim availability.
+Edit `domain_generation_config.json` to control the business-oriented candidate pool. Set `industry` to a key in `industry_profiles` to change the keyword weighting used by the generator. You can also edit or add profiles, or omit the selector and use the legacy `industry_keywords` list. The generator creates review-only names and does not claim availability.
 
 The premium candidate gate requires a score of at least 18 from the phonetic, spelling, uniqueness, brand, industry, and legal filters. The strict purchase filter is `INR 5,000` for first-year registration and `INR 6,000` for renewal. A domain must be confirmed available by GoDaddy, include a returned price, use INR, and meet the configured budget. Renewal price is preserved when the API supplies it; it can be made mandatory with `budget.require_renewal_price`.
 

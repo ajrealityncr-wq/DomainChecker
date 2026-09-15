@@ -30,6 +30,17 @@ def load_generation_config(path: Path) -> dict[str, Any]:
     return config
 
 
+def configured_industry_keywords(config: dict[str, Any]) -> list[str]:
+    profiles = config.get("industry_profiles", {})
+    selected = config.get("industry")
+    if not selected:
+        brand = config.get("brand", {})
+        selected = brand.get("industry") if isinstance(brand, dict) else None
+    if isinstance(profiles, dict) and selected in profiles:
+        return normalize_list(profiles[selected])
+    return normalize_list(config.get("industry_keywords", []))
+
+
 def candidate_score(name: str, pattern: str, config: dict[str, Any]) -> int:
     score = 0
     if pattern == "CVCV":
@@ -42,7 +53,7 @@ def candidate_score(name: str, pattern: str, config: dict[str, Any]) -> int:
     blocked_fragments = {str(value).lower() for value in normalize_list(config.get("blocked_fragments", []))}
     avoid_words = {str(value).lower() for value in normalize_list(config.get("avoid_words", []))}
     brand_keywords = normalize_list(config.get("brand_keywords", []))
-    industry_keywords = normalize_list(config.get("industry_keywords", []))
+    industry_keywords = configured_industry_keywords(config)
     blocked_brands = {str(value).lower() for value in normalize_list(config.get("blocked_brands", []))}
     blocked_suffixes = [str(value).lower() for value in normalize_list(config.get("blocked_suffixes", []))]
     legal = config.get("legal", {})
