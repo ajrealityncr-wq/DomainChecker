@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 
 import search_service as ss
 import settings
+from history import DomainHistory
 
 
 def utc_now() -> str:
@@ -32,7 +33,11 @@ def main() -> int:
         print(f"Input error: {exc}")
         return 2
 
-    industry, domains = ss.plan_domains(request)
+    try:
+        industry, domains = ss.next_domains(request, DomainHistory())
+    except ss.SearchError as exc:
+        print(f"Stopped: {exc}")
+        return 1
     output = settings.OUTPUT_DIRECTORY / "generated_review_domains.json"
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(domains, indent=2) + "\n", encoding="utf-8")

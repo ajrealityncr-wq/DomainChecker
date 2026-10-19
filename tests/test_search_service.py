@@ -3,6 +3,7 @@ import time
 import pytest
 
 import cache as cache_module
+from history import DomainHistory
 import godaddy_checker as gc
 import search_service as ss
 import settings
@@ -193,20 +194,14 @@ def test_rdap_lookups_run_in_parallel_and_report_progress(monkeypatch, cache):
     assert "Checking availability with GoDaddy" in stages
 
 
-def test_repeat_search_uses_cached_answers(online, cache):
-    calls = []
-
-    def counting(batch, config, pat, logger):
-        calls.append(len(batch))
-        return fake_check("real")(batch, config, pat, logger)
-
+def test_repeat_search_never_repeats_a_domain(online, cache):
     request = ss.SearchRequest(keyword="real estate", tlds=(".com",))
-    first = ss.execute(request, counting, lambda **fields: None, cache=cache)
-    calls_after_first = sum(calls)
-    second = ss.execute(request, counting, lambda **fields: None, cache=cache)
-    assert calls_after_first > 0
-    assert sum(calls) == calls_after_first  # the second search made no GoDaddy calls
-    assert len(second["offers"]) == len(first["offers"])
+    first = ss.execute(request, fake_check("real"), lambda **fields: None, cache=cache)
+    second = ss.execute(request, fake_check("real"), lambda **fields: None, cache=cache)
+    first_names = {offer["domain"] for offer in first["offers"]}
+    second_names = {offer["domain"] for offer in second["offers"]}
+    assert first_names
+    assert first_names.isdisjoint(second_names)
 
 
 def test_failed_batch_is_reported_not_marked_available(online, cache):
@@ -345,3 +340,69 @@ def test_renewal_cap_alone_still_flags_budget(online, cache):
     outcome = ss.execute(request, fake_check("real", price=1000), lambda **fields: None, cache=cache)
     assert outcome["offers"]
     assert all(offer["within_budget"] is True for offer in outcome["offers"])  # fake renewal is 900, under 950
+
+
+# --- every generated name is unique (uniqueness rule) -----------------------
+
+def test_concurrent_searches_never_take_the_same_name(tmp_path):
+    import threading
+    history = DomainHistory(tmp_path / "h.sqlite3")
+    request = ss.SearchRequest(keyword="real estate", tlds=(".com",))
+    taken: list[list[str]] = []
+    lock = threading.Lock()
+
+    def take():
+        _, domains = ss.next_domains(request, history)
+        with lock:
+            taken.append(domains)
+
+    threads = [threading.Thread(target=take) for _ in range(6)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    everything = [domain for batch in taken for domain in batch]
+    assert len(everything) == len(set(everything))
+
+
+def test_exhausted_keyword_says_no_new_names_are_left(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "CANDIDATE_POOL_PER_KEYWORD", 2)
+    monkeypatch.setattr(settings, "CANDIDATES_PER_SEARCH", 2)
+    history = DomainHistory(tmp_path / "h.sqlite3")
+    request = ss.SearchRequest(keyword="automation", tlds=(".com",))
+    ss.next_domains(request, history)
+    with pytest.raises(ss.SearchError, match="No new names"):
+        ss.next_domains(request, history)
+
+
+def test_names_are_released_when_the_check_fails_so_they_can_be_retried(online, cache, tmp_path):
+    history = DomainHistory(tmp_path / "h.sqlite3")
+    request = ss.SearchRequest(keyword="real estate", tlds=(".com",))
+
+    def flaky(batch, config, pat, logger):
+        return [], "GoDaddy returned HTTP 500"
+
+    ss.execute(request, flaky, lambda **fields: None, cache=cache, history=history)
+    retried = ss.execute(request, fake_check("real"), lambda **fields: None, cache=cache, history=history)
+    assert retried["offers"]
+
+
+def test_names_are_released_when_the_run_stops_with_an_error(online, cache, tmp_path):
+    history = DomainHistory(tmp_path / "h.sqlite3")
+    request = ss.SearchRequest(keyword="real estate", tlds=(".com",))
+
+    def rejected(batch, config, pat, logger):
+        raise gc.AuthError("HTTP 401")
+
+    with pytest.raises(gc.AuthError):
+        ss.execute(request, rejected, lambda **fields: None, cache=cache, history=history)
+    _, domains = ss.plan_domains(request)
+    assert history.unseen(domains) == domains  # nothing from the stopped run stays marked as used
+
+
+def test_history_marks_and_releases(tmp_path):
+    history = DomainHistory(tmp_path / "h.sqlite3")
+    history.mark_seen(["a1.com", "b2.com"])
+    assert history.unseen(["a1.com", "b2.com", "c3.com"]) == ["c3.com"]
+    history.release(["a1.com"])
+    assert history.unseen(["a1.com", "b2.com"]) == ["a1.com"]

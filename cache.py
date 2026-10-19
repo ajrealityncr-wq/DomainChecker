@@ -13,7 +13,8 @@ import settings
 
 
 class DomainCache:
-    def __init__(self, path: Path = settings.APP_DATABASE, ttl_seconds: float = settings.CACHE_TTL_SECONDS) -> None:
+    def __init__(self, path: Path | None = None, ttl_seconds: float = settings.CACHE_TTL_SECONDS) -> None:
+        path = path or settings.APP_DATABASE
         self._path = path
         self._ttl = ttl_seconds
         self._lock = threading.Lock()
