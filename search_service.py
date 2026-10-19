@@ -1,34 +1,51 @@
 """Keyword search: readable names that contain the keyword, TLD selection, availability and budget.
 
 A search runs in a background thread. The caller gets a job id, then polls the job store for
-progress and offers. Jobs are stored in SQLite, so they survive a restart. Availability always
-comes from GoDaddy; RDAP is only used to skip names it reports as registered.
+progress and offers. Jobs and cached answers are stored in SQLite. Availability always comes
+from GoDaddy; RDAP is only used to skip names it reports as registered.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 import sqlite3
 import threading
+import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
 import godaddy_checker as gc
 import settings
+import trademark
+from cache import DomainCache
 
 logger = logging.getLogger("search")
 KEYWORD_RE = re.compile(r"^[A-Za-z][A-Za-z \-]*$")
 MIN_KEYWORD_WORD = 3
 
 CheckFn = Callable[[list[str], dict[str, Any], str, logging.Logger], tuple[list[gc.CheckResult], str | None]]
+Progress = Callable[..., None]
 
 
 class SearchError(RuntimeError):
     """A user-facing failure, such as a missing token. The message is shown in the UI."""
+
+
+class LimitError(RuntimeError):
+    """The app is at its limit for concurrent or daily searches."""
+
+
+def _check_price(label: str, value: float | None) -> None:
+    if value is None:
+        return
+    if not math.isfinite(value) or value < 0 or value > settings.MAX_PRICE_LIMIT:
+        raise ValueError(f"{label} must be between 0 and {settings.MAX_PRICE_LIMIT:,}")
 
 
 @dataclass(frozen=True)
@@ -36,6 +53,7 @@ class SearchRequest:
     keyword: str
     tlds: tuple[str, ...]
     max_price: float | None = None
+    max_renewal_price: float | None = None
 
     def __post_init__(self) -> None:
         keyword = self.keyword.strip()
@@ -43,10 +61,12 @@ class SearchRequest:
             raise ValueError("Keyword may contain only letters, spaces and hyphens")
         if not tokenize_keywords(keyword):
             raise ValueError(f"Keyword needs at least one word of {MIN_KEYWORD_WORD} letters")
+        if _is_blocked(re.sub(r"[^a-z]", "", keyword.lower())):
+            raise ValueError("That keyword is not allowed")
         if not self.tlds or any(tld not in settings.ALLOWED_TLDS for tld in self.tlds):
             raise ValueError(f"Choose one or more of: {', '.join(settings.ALLOWED_TLDS)}")
-        if self.max_price is not None and self.max_price < 0:
-            raise ValueError("max_price cannot be negative")
+        _check_price("max_price", self.max_price)
+        _check_price("max_renewal_price", self.max_renewal_price)
 
 
 def tokenize_keywords(text: str) -> list[str]:
@@ -68,6 +88,12 @@ def infer_industry(keyword: str) -> str | None:
         if count > best_count:
             best, best_count = industry, count
     return best
+
+
+def _is_blocked(name: str) -> bool:
+    if name in settings.BLOCKED_EXACT:
+        return True
+    return any(term in name for term in settings.BLOCKED_SUBSTRINGS)
 
 
 def word_candidates(keyword: str, industry: str | None, limit: int) -> list[str]:
@@ -102,7 +128,7 @@ def word_candidates(keyword: str, industry: str | None, limit: int) -> list[str]
             continue
         if not any(term in name for term in terms):
             continue
-        if any(term in name for term in settings.BLOCKED_TERMS):
+        if _is_blocked(name):
             continue
         if any(name.endswith(suffix) for suffix in settings.BLOCKED_SUFFIXES):
             continue
@@ -133,7 +159,7 @@ def budget_config(request: SearchRequest) -> dict[str, Any]:
     return {
         "budget": {
             "max_yearly_price": request.max_price,
-            "max_renewal_price": None,
+            "max_renewal_price": request.max_renewal_price,
             "currency": settings.CURRENCY,
             "require_renewal_price": False,
         }
@@ -151,9 +177,34 @@ def to_offer(result: gc.CheckResult, budget: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def execute(request: SearchRequest, check_fn: CheckFn, progress: Callable[..., None]) -> dict[str, Any]:
+def _registered_status(domains: list[str], config: dict[str, Any], cache: DomainCache, progress: Progress) -> dict[str, bool | None]:
+    """RDAP answers for every domain, in parallel. Cached answers are reused."""
+    status: dict[str, bool | None] = dict(cache.get_many("rdap", domains))
+    todo = [domain for domain in domains if domain not in status]
+    progress(total=len(domains), checked=len(status), stage="Checking for registered names")
+    done = 0
+    with ThreadPoolExecutor(max_workers=settings.RDAP_WORKERS) as pool:
+        futures = {pool.submit(gc.rdap_is_registered, domain, config): domain for domain in todo}
+        for future in as_completed(futures):
+            domain = futures[future]
+            try:
+                status[domain] = future.result()
+            except Exception:
+                logger.exception("RDAP lookup failed for %s", domain)
+                status[domain] = None
+            done += 1
+            if done % 10 == 0 or done == len(todo):
+                progress(checked=len(status))
+    cache.put_many("rdap", {domain: status[domain] for domain in todo if status[domain] is not None})
+    return status
+
+
+def execute(request: SearchRequest, check_fn: CheckFn, progress: Progress,
+            cache: DomainCache | None = None, screen: trademark.TrademarkScreen | None = None) -> dict[str, Any]:
     """Run one search end to end. `progress` receives keyword updates for the job record."""
     config = gc.default_config()
+    cache = cache or DomainCache()
+    screen = screen or trademark.NotConfiguredScreen()
     industry, domains = plan_domains(request)
     progress(industry=industry, total=len(domains), checked=0)
 
@@ -161,49 +212,60 @@ def execute(request: SearchRequest, check_fn: CheckFn, progress: Callable[..., N
     if not pat:
         raise SearchError("GoDaddy token is not configured. Set GODADDY_PAT in the environment or .env, then restart.")
 
-    remaining: list[str] = []
-    skipped_registered = 0
-    for domain in domains:
-        if gc.rdap_is_registered(domain, config) is True:
-            skipped_registered += 1
-        else:
-            remaining.append(domain)
-    progress(total=len(remaining), skipped_registered=skipped_registered)
+    registered = _registered_status(domains, config, cache, progress)
+    remaining = [domain for domain in domains if registered.get(domain) is not True]
+    skipped_registered = len(domains) - len(remaining)
 
     budget = budget_config(request)
-    results: list[gc.CheckResult] = []
+    known = cache.get_many("godaddy", remaining)
+    to_check = [domain for domain in remaining if domain not in known]
+    results = [gc.result_from_record(record) for record in known.values() if record.get("available") in {True, False}]
+    checked = len(known)
+    progress(total=len(remaining), checked=checked, skipped_registered=skipped_registered, stage="Checking availability with GoDaddy")
+
     failed: list[str] = []
-    checked = 0
-    for batch in gc.batches(remaining, config["batch_size"]):
+    new_records: dict[str, Any] = {}
+    for batch in gc.batches(to_check, config["batch_size"]):
         batch_results, error = check_fn(batch, config, pat, logger)
         if error:
             logger.warning("Batch failed: %s", error)
             failed.extend(batch)
         else:
             results.extend(batch_results)
+            new_records.update({result.domain: gc.record_for_output(result) for result in batch_results})
         checked += len(batch)
         progress(checked=checked)
+    cache.put_many("godaddy", new_records)
 
     offers = [to_offer(result, budget) for result in results if result.available is True]
+    offers = trademark.apply_screen(offers, screen)
     offers.sort(key=lambda offer: (not offer["within_budget"], offer["price"] is None, offer["price"] or 0, offer["domain"]))
-    return {"offers": offers, "failed": failed, "skipped_registered": skipped_registered}
+    return {
+        "offers": offers,
+        "failed": failed,
+        "skipped_registered": skipped_registered,
+        "trademark_checked": not isinstance(screen, trademark.NotConfiguredScreen),
+    }
 
 
 class JobStore:
-    """Job records in SQLite. Jobs that were running when the server stopped are marked failed on start."""
+    """Job records in SQLite. Jobs running at shutdown are marked failed on start; old jobs are removed."""
 
-    def __init__(self, path: Path = settings.JOBS_DATABASE) -> None:
+    def __init__(self, path: Path = settings.APP_DATABASE) -> None:
         self._path = path
         self._lock = threading.Lock()
         path.parent.mkdir(parents=True, exist_ok=True)
         db = self._connect()
         try:
-            db.execute("CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, body TEXT NOT NULL)")
-            for job_id, body in db.execute("SELECT id, body FROM jobs").fetchall():
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, status TEXT NOT NULL,"
+                " created_at REAL NOT NULL, body TEXT NOT NULL)"
+            )
+            for job_id, body in db.execute("SELECT id, body FROM jobs WHERE status IN ('queued', 'running')").fetchall():
                 job = json.loads(body)
-                if job["status"] in {"queued", "running"}:
-                    job.update(status="failed", error="The server stopped during this search. Run it again.")
-                    db.execute("UPDATE jobs SET body = ? WHERE id = ?", (json.dumps(job), job_id))
+                job.update(status="failed", error="The server stopped during this search. Run it again.")
+                db.execute("UPDATE jobs SET status = ?, body = ? WHERE id = ?", ("failed", json.dumps(job), job_id))
+            db.execute("DELETE FROM jobs WHERE created_at < ?", (time.time() - settings.JOB_RETENTION_DAYS * 86400,))
             db.commit()
         finally:
             db.close()
@@ -222,7 +284,10 @@ class JobStore:
     def _save(self, job: dict[str, Any]) -> None:
         db = self._connect()
         try:
-            db.execute("INSERT OR REPLACE INTO jobs (id, body) VALUES (?, ?)", (job["id"], json.dumps(job)))
+            db.execute(
+                "INSERT OR REPLACE INTO jobs (id, status, created_at, body) VALUES (?, ?, ?, ?)",
+                (job["id"], job["status"], job["created_at"], json.dumps(job)),
+            )
             db.commit()
         finally:
             db.close()
@@ -232,12 +297,17 @@ class JobStore:
         job = {
             "id": job_id,
             "status": "queued",
+            "stage": "Queued",
+            "created_at": time.time(),
             "keyword": request.keyword.strip(),
             "tlds": list(request.tlds),
+            "max_price": request.max_price,
+            "max_renewal_price": request.max_renewal_price,
             "industry": None,
             "total": 0,
             "checked": 0,
             "skipped_registered": 0,
+            "trademark_checked": False,
             "offers": [],
             "failed": [],
             "error": None,
@@ -258,22 +328,55 @@ class JobStore:
         with self._lock:
             return self._load(job_id)
 
+    def active_count(self) -> int:
+        db = self._connect()
+        try:
+            return db.execute("SELECT COUNT(*) FROM jobs WHERE status IN ('queued', 'running')").fetchone()[0]
+        finally:
+            db.close()
 
-def run_job(store: JobStore, job_id: str, request: SearchRequest, check_fn: CheckFn) -> None:
+    def created_since(self, since: float) -> int:
+        db = self._connect()
+        try:
+            return db.execute("SELECT COUNT(*) FROM jobs WHERE created_at >= ?", (since,)).fetchone()[0]
+        finally:
+            db.close()
+
+
+def run_job(store: JobStore, job_id: str, request: SearchRequest, check_fn: CheckFn,
+            cache: DomainCache | None = None, screen: trademark.TrademarkScreen | None = None) -> None:
     """Run a search and record its outcome. Every failure lands on the job, never on the thread."""
-    store.update(job_id, status="running")
+    store.update(job_id, status="running", stage="Starting")
     try:
-        outcome = execute(request, check_fn, lambda **fields: store.update(job_id, **fields))
+        outcome = execute(request, check_fn, lambda **fields: store.update(job_id, **fields), cache, screen)
     except (SearchError, gc.AuthError) as exc:
-        store.update(job_id, status="failed", error=str(exc))
+        store.update(job_id, status="failed", stage="Stopped", error=str(exc))
     except Exception:
         logger.exception("search %s failed", job_id)
-        store.update(job_id, status="failed", error="The search failed. See the server log for details.")
+        store.update(job_id, status="failed", stage="Stopped", error="The search failed. See the server log for details.")
     else:
-        store.update(job_id, status="done", offers=outcome["offers"], failed=outcome["failed"], skipped_registered=outcome["skipped_registered"])
+        store.update(
+            job_id,
+            status="done",
+            stage="Finished",
+            offers=outcome["offers"],
+            failed=outcome["failed"],
+            skipped_registered=outcome["skipped_registered"],
+            trademark_checked=outcome["trademark_checked"],
+        )
 
 
-def start_search(store: JobStore, request: SearchRequest, check_fn: CheckFn = gc.check_batch) -> str:
-    job_id = store.create(request)
-    threading.Thread(target=run_job, args=(store, job_id, request, check_fn), daemon=True).start()
+_start_lock = threading.Lock()
+
+
+def start_search(store: JobStore, request: SearchRequest, check_fn: CheckFn = gc.check_batch,
+                 cache: DomainCache | None = None, screen: trademark.TrademarkScreen | None = None) -> str:
+    """Check the limits, create the job and start it in a background thread."""
+    with _start_lock:  # the limit check and the job creation must happen together
+        if store.active_count() >= settings.MAX_CONCURRENT_SEARCHES:
+            raise LimitError("Two searches are already running. Wait for one to finish, then try again.")
+        if store.created_since(time.time() - 86400) >= settings.MAX_SEARCHES_PER_DAY:
+            raise LimitError("The daily search limit has been reached. Try again tomorrow.")
+        job_id = store.create(request)
+    threading.Thread(target=run_job, args=(store, job_id, request, check_fn, cache, screen), daemon=True).start()
     return job_id
