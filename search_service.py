@@ -122,6 +122,9 @@ def word_candidates(keyword: str, industry: str | None, limit: int) -> list[str]
     raw += [term + second for index, term in enumerate(terms) for second in terms[index + 1:]]
     # Prefix + keyword + suffix gives a much larger pool for short keywords. These rank last.
     raw += [prefix + joined + suffix for prefix in prefixes for suffix in suffixes]
+    # Inflections (automations, automationer, ...) and two suffixes in a row (automationhubpro).
+    raw += [joined + ending for ending in settings.INFLECTIONS]
+    raw += [joined + first + second for first in suffixes for second in suffixes if first != second]
 
     pattern = re.compile(rf"[a-z]{{{settings.MIN_NAME_LENGTH},{settings.MAX_NAME_LENGTH}}}")
     names: list[str] = []
@@ -142,10 +145,10 @@ def word_candidates(keyword: str, industry: str | None, limit: int) -> list[str]
 
 
 def _rank_tier(name: str, joined: str) -> int:
-    """0: the exact keyword. 1: keyword with a suffix. 2: keyword with a prefix. 3: everything else."""
+    """0: the exact keyword. 1: keyword with one suffix or inflection. 2: keyword with a prefix. 3: everything else."""
     if name == joined:
         return 0
-    if name.startswith(joined):
+    if name.startswith(joined) and (name[len(joined):] in settings.SUFFIXES or name[len(joined):] in settings.INFLECTIONS):
         return 1
     if name.endswith(joined):
         return 2

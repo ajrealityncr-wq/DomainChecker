@@ -37,7 +37,7 @@ For each search the app:
 
 Results are kept in `output/app.sqlite3`, so a finished search is still there after a restart.
 
-**Every name is unique.** Each name the app generates is recorded, and a later search or generator run never produces it again. A name is released only when its check failed or the run stopped, so it can be tried later. Each keyword has a finite set of names (a few hundred for a typical keyword). When they are all used, the search says that no new names are left. Use a different keyword or extension to continue.
+**Every name is unique.** Each name the app generates is recorded, and a later search or generator run never produces it again. A name is released only when its check failed or the run stopped, so it can be tried later. Each keyword has a finite set of names (about 1,700 to 2,800 for a typical keyword, built from prefixes, suffixes, plurals and combinations). When they are all used, the search says that no new names are left. Use a different keyword or extension to continue.
 
 ## Command line
 

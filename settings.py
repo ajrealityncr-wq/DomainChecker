@@ -65,6 +65,9 @@ SUFFIXES = (
     "team", "central", "genius", "expert", "lab", "stream", "scout", "rocket", "pal",
 )
 
+# Plural endings: automation -> automations. Other endings read badly ("automationer").
+INFLECTIONS = ("s", "ers")
+
 # Industry vocabulary is used only when a keyword matches one of these profiles.
 # Stems are three letters so that they can match inside a name.
 INDUSTRY_PROFILES = {
