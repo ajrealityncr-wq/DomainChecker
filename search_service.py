@@ -1,28 +1,28 @@
-"""Keyword search: word-based candidates, TLD selection, availability and budget tagging.
+"""Keyword search: readable names that contain the keyword, TLD selection, availability and budget.
 
-A search runs in a background thread. The caller gets a job id, then polls the job store
-for progress and offers. Availability always comes from GoDaddy; RDAP is only used to skip
-names it reports as registered.
+A search runs in a background thread. The caller gets a job id, then polls the job store for
+progress and offers. Jobs are stored in SQLite, so they survive a restart. Availability always
+comes from GoDaddy; RDAP is only used to skip names it reports as registered.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import re
+import sqlite3
 import threading
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-import generate_domains as gd
 import godaddy_checker as gc
+import settings
 
-ALLOWED_TLDS = (".com", ".in", ".ai", ".co")
-KEYWORD_RE = re.compile(r"^[A-Za-z][A-Za-z \-]{1,59}$")
-MAX_CANDIDATES = 200
-MIN_NAME_LENGTH = 4
 logger = logging.getLogger("search")
+KEYWORD_RE = re.compile(r"^[A-Za-z][A-Za-z \-]*$")
+MIN_KEYWORD_WORD = 3
 
 CheckFn = Callable[[list[str], dict[str, Any], str, logging.Logger], tuple[list[gc.CheckResult], str | None]]
 
@@ -36,49 +36,54 @@ class SearchRequest:
     keyword: str
     tlds: tuple[str, ...]
     max_price: float | None = None
-    max_renewal_price: float | None = None
-    currency: str = "INR"
-    candidate_limit: int = 50
 
     def __post_init__(self) -> None:
-        if not KEYWORD_RE.fullmatch(self.keyword.strip()):
+        keyword = self.keyword.strip()
+        if len(keyword) > settings.MAX_KEYWORD_LENGTH or not KEYWORD_RE.fullmatch(keyword):
             raise ValueError("Keyword may contain only letters, spaces and hyphens")
-        if not self.tlds or any(tld not in ALLOWED_TLDS for tld in self.tlds):
-            raise ValueError(f"Choose one or more of: {', '.join(ALLOWED_TLDS)}")
-        if not 1 <= self.candidate_limit <= MAX_CANDIDATES:
-            raise ValueError(f"candidate_limit must be between 1 and {MAX_CANDIDATES}")
-        for label, value in (("max_price", self.max_price), ("max_renewal_price", self.max_renewal_price)):
-            if value is not None and value < 0:
-                raise ValueError(f"{label} cannot be negative")
+        if not tokenize_keywords(keyword):
+            raise ValueError(f"Keyword needs at least one word of {MIN_KEYWORD_WORD} letters")
+        if not self.tlds or any(tld not in settings.ALLOWED_TLDS for tld in self.tlds):
+            raise ValueError(f"Choose one or more of: {', '.join(settings.ALLOWED_TLDS)}")
+        if self.max_price is not None and self.max_price < 0:
+            raise ValueError("max_price cannot be negative")
 
 
-def word_blocklist(config: dict[str, Any]) -> tuple[list[str], list[str]]:
-    """Legal terms, brands and suffixes only. Industry words such as "home" or "real" are not blocked here."""
-    legal = config.get("legal", {})
-    terms = gd.normalize_list(legal.get("blocked_terms", [])) + gd.normalize_list(config.get("blocked_brands", []))
-    suffixes = gd.normalize_list(legal.get("blocked_suffixes", [])) + gd.normalize_list(config.get("blocked_suffixes", []))
-    return list(dict.fromkeys(terms)), list(dict.fromkeys(suffixes))
+def tokenize_keywords(text: str) -> list[str]:
+    """Lowercase keyword words of three or more letters, first occurrence kept."""
+    words = [word for word in re.split(r"[^a-z]+", text.lower()) if len(word) >= MIN_KEYWORD_WORD]
+    return list(dict.fromkeys(words))
 
 
-def word_candidates(keyword: str, config: dict[str, Any], industry: str | None, limit: int) -> list[str]:
-    """Names that contain the keyword, built with affixes and (when the keyword fits an industry) its vocabulary.
+def _stem_matches(term: str, stem: str) -> bool:
+    return len(stem) >= MIN_KEYWORD_WORD and (stem in term or term in stem)
 
-    Every returned name contains at least one keyword word, so "automation" returns automation names
-    and "tag" returns tag names. The industry vocabulary is only used when the keyword matched a profile.
+
+def infer_industry(keyword: str) -> str | None:
+    """The industry profile the keyword words point to, or None. The profile matching most words wins."""
+    terms = tokenize_keywords(keyword)
+    best, best_count = None, 0
+    for industry, stems in settings.INDUSTRY_PROFILES.items():
+        count = sum(1 for term in terms if any(_stem_matches(term, stem) for stem in stems))
+        if count > best_count:
+            best, best_count = industry, count
+    return best
+
+
+def word_candidates(keyword: str, industry: str | None, limit: int) -> list[str]:
+    """Names that contain the keyword, built with affixes and (for a matched industry) its vocabulary.
+
+    Every returned name contains at least one keyword word, so "automation" returns automation
+    names and "tag" returns tag names. Affixes are the same for every keyword.
     """
-    word_cfg = config.get("word_generation", {})
-    terms = gd.tokenize_keywords(keyword)
-    if not terms:
-        raise ValueError("Keyword needs at least one word of three or more letters")
-    vocabulary = gd.normalize_list(word_cfg.get("vocabulary_by_industry", {}).get(industry, [])) if industry else []
+    terms = tokenize_keywords(keyword)
+    joined = "".join(terms)
+    vocabulary = list(settings.INDUSTRY_VOCABULARY.get(industry, ())) if industry else []
     # A vocabulary word that already contains the keyword ("realty" for "real") is not paired with it again.
     paired = [word for word in vocabulary if not any(term in word for term in terms)]
-    prefixes = list(dict.fromkeys(gd.normalize_list(word_cfg.get("prefixes", [])) + gd.normalize_list(word_cfg.get("extra_prefixes", []))))
-    suffixes = list(dict.fromkeys(gd.normalize_list(word_cfg.get("suffixes", [])) + gd.normalize_list(word_cfg.get("extra_suffixes", []))))
-    max_length = int(word_cfg.get("max_length", 14))
-    blocked_terms, blocked_suffixes = word_blocklist(config)
+    prefixes = settings.PREFIXES
+    suffixes = settings.SUFFIXES
 
-    joined = "".join(terms)
     raw = [joined]
     raw += [joined + suffix for suffix in suffixes]
     raw += [prefix + joined for prefix in prefixes]
@@ -89,17 +94,17 @@ def word_candidates(keyword: str, config: dict[str, Any], industry: str | None, 
     raw += [word + suffix for word in vocabulary for suffix in suffixes]
     raw += [term + second for index, term in enumerate(terms) for second in terms[index + 1:]]
 
+    pattern = re.compile(rf"[a-z]{{{settings.MIN_NAME_LENGTH},{settings.MAX_NAME_LENGTH}}}")
     names: list[str] = []
     seen: set[str] = set()
-    pattern = re.compile(rf"[a-z]{{{MIN_NAME_LENGTH},{max_length}}}")
     for name in raw:
         if name in seen or not pattern.fullmatch(name):
             continue
         if not any(term in name for term in terms):
             continue
-        if any(term in name for term in blocked_terms):
+        if any(term in name for term in settings.BLOCKED_TERMS):
             continue
-        if any(name.endswith(suffix) for suffix in blocked_suffixes):
+        if any(name.endswith(suffix) for suffix in settings.BLOCKED_SUFFIXES):
             continue
         seen.add(name)
         names.append(name)
@@ -108,19 +113,19 @@ def word_candidates(keyword: str, config: dict[str, Any], industry: str | None, 
 
 
 def _rank_tier(name: str, joined: str) -> int:
-    """0: the exact keyword. 1: the keyword phrase with an affix. 2: everything else that contains a keyword word."""
+    """0: the exact keyword. 1: keyword with a suffix. 2: keyword with a prefix. 3: everything else."""
     if name == joined:
         return 0
-    if joined in name:
+    if name.startswith(joined):
         return 1
-    return 2
+    if name.endswith(joined):
+        return 2
+    return 3
 
 
-def plan_domains(request: SearchRequest, generation_config: dict[str, Any]) -> tuple[str | None, list[str]]:
-    intent = gd.infer_intent(request.keyword, generation_config)
-    # Only a keyword that matched an industry profile brings in that industry's vocabulary.
-    industry = intent["industry"] if intent["source"] == "keywords" else None
-    names = word_candidates(request.keyword, generation_config, industry, request.candidate_limit)
+def plan_domains(request: SearchRequest) -> tuple[str | None, list[str]]:
+    industry = infer_industry(request.keyword)
+    names = word_candidates(request.keyword, industry, settings.CANDIDATES_PER_SEARCH)
     return industry, [name + tld for name in names for tld in request.tlds]
 
 
@@ -128,8 +133,8 @@ def budget_config(request: SearchRequest) -> dict[str, Any]:
     return {
         "budget": {
             "max_yearly_price": request.max_price,
-            "max_renewal_price": request.max_renewal_price,
-            "currency": request.currency,
+            "max_renewal_price": None,
+            "currency": settings.CURRENCY,
             "require_renewal_price": False,
         }
     }
@@ -146,29 +151,30 @@ def to_offer(result: gc.CheckResult, budget: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def execute(request: SearchRequest, root: Path, check_fn: CheckFn, progress: Callable[..., None]) -> dict[str, Any]:
+def execute(request: SearchRequest, check_fn: CheckFn, progress: Callable[..., None]) -> dict[str, Any]:
     """Run one search end to end. `progress` receives keyword updates for the job record."""
-    config = gc.load_config(root / "config.json")
-    generation_config = gd.load_generation_config(root / "domain_generation_config.json")
-    industry, domains = plan_domains(request, generation_config)
+    config = gc.default_config()
+    industry, domains = plan_domains(request)
     progress(industry=industry, total=len(domains), checked=0)
 
-    pat = gc.load_pat(None, config, root)
+    pat = gc.load_pat()
     if not pat:
-        raise SearchError("GoDaddy token is not configured. Add GODADDY_PAT to .env and restart.")
+        raise SearchError("GoDaddy token is not configured. Set GODADDY_PAT in the environment or .env, then restart.")
 
+    remaining: list[str] = []
     skipped_registered = 0
-    if config["prefilter"].get("enabled"):
-        remaining = [domain for domain in domains if gc.rdap_is_registered(domain, config) is not True]
-        skipped_registered = len(domains) - len(remaining)
-        domains = remaining
-        progress(total=len(domains), skipped_registered=skipped_registered)
+    for domain in domains:
+        if gc.rdap_is_registered(domain, config) is True:
+            skipped_registered += 1
+        else:
+            remaining.append(domain)
+    progress(total=len(remaining), skipped_registered=skipped_registered)
 
     budget = budget_config(request)
     results: list[gc.CheckResult] = []
     failed: list[str] = []
     checked = 0
-    for batch in gc.batches(domains, int(config["batch_size"])):
+    for batch in gc.batches(remaining, config["batch_size"]):
         batch_results, error = check_fn(batch, config, pat, logger)
         if error:
             logger.warning("Batch failed: %s", error)
@@ -184,47 +190,80 @@ def execute(request: SearchRequest, root: Path, check_fn: CheckFn, progress: Cal
 
 
 class JobStore:
-    """In-memory job records. Jobs are lost when the server restarts."""
+    """Job records in SQLite. Jobs that were running when the server stopped are marked failed on start."""
 
-    def __init__(self) -> None:
-        self._jobs: dict[str, dict[str, Any]] = {}
+    def __init__(self, path: Path = settings.JOBS_DATABASE) -> None:
+        self._path = path
         self._lock = threading.Lock()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        db = self._connect()
+        try:
+            db.execute("CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, body TEXT NOT NULL)")
+            for job_id, body in db.execute("SELECT id, body FROM jobs").fetchall():
+                job = json.loads(body)
+                if job["status"] in {"queued", "running"}:
+                    job.update(status="failed", error="The server stopped during this search. Run it again.")
+                    db.execute("UPDATE jobs SET body = ? WHERE id = ?", (json.dumps(job), job_id))
+            db.commit()
+        finally:
+            db.close()
+
+    def _connect(self) -> sqlite3.Connection:
+        return sqlite3.connect(self._path, timeout=10)
+
+    def _load(self, job_id: str) -> dict[str, Any] | None:
+        db = self._connect()
+        try:
+            row = db.execute("SELECT body FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        finally:
+            db.close()
+        return json.loads(row[0]) if row else None
+
+    def _save(self, job: dict[str, Any]) -> None:
+        db = self._connect()
+        try:
+            db.execute("INSERT OR REPLACE INTO jobs (id, body) VALUES (?, ?)", (job["id"], json.dumps(job)))
+            db.commit()
+        finally:
+            db.close()
 
     def create(self, request: SearchRequest) -> str:
         job_id = uuid.uuid4().hex
+        job = {
+            "id": job_id,
+            "status": "queued",
+            "keyword": request.keyword.strip(),
+            "tlds": list(request.tlds),
+            "industry": None,
+            "total": 0,
+            "checked": 0,
+            "skipped_registered": 0,
+            "offers": [],
+            "failed": [],
+            "error": None,
+        }
         with self._lock:
-            self._jobs[job_id] = {
-                "id": job_id,
-                "status": "queued",
-                "keyword": request.keyword.strip(),
-                "tlds": list(request.tlds),
-                "industry": None,
-                "total": 0,
-                "checked": 0,
-                "skipped_registered": 0,
-                "offers": [],
-                "failed": [],
-                "error": None,
-            }
+            self._save(job)
         return job_id
 
     def update(self, job_id: str, **fields: Any) -> None:
         with self._lock:
-            self._jobs[job_id].update(fields)
+            job = self._load(job_id)
+            if job is None:
+                raise KeyError(job_id)
+            job.update(fields)
+            self._save(job)
 
     def get(self, job_id: str) -> dict[str, Any] | None:
         with self._lock:
-            job = self._jobs.get(job_id)
-            if job is None:
-                return None
-            return {**job, "offers": list(job["offers"]), "failed": list(job["failed"])}
+            return self._load(job_id)
 
 
-def run_job(store: JobStore, job_id: str, request: SearchRequest, root: Path, check_fn: CheckFn) -> None:
+def run_job(store: JobStore, job_id: str, request: SearchRequest, check_fn: CheckFn) -> None:
     """Run a search and record its outcome. Every failure lands on the job, never on the thread."""
     store.update(job_id, status="running")
     try:
-        outcome = execute(request, root, check_fn, lambda **fields: store.update(job_id, **fields))
+        outcome = execute(request, check_fn, lambda **fields: store.update(job_id, **fields))
     except (SearchError, gc.AuthError) as exc:
         store.update(job_id, status="failed", error=str(exc))
     except Exception:
@@ -234,7 +273,7 @@ def run_job(store: JobStore, job_id: str, request: SearchRequest, root: Path, ch
         store.update(job_id, status="done", offers=outcome["offers"], failed=outcome["failed"], skipped_registered=outcome["skipped_registered"])
 
 
-def start_search(store: JobStore, request: SearchRequest, root: Path, check_fn: CheckFn = gc.check_batch) -> str:
+def start_search(store: JobStore, request: SearchRequest, check_fn: CheckFn = gc.check_batch) -> str:
     job_id = store.create(request)
-    threading.Thread(target=run_job, args=(store, job_id, request, root, check_fn), daemon=True).start()
+    threading.Thread(target=run_job, args=(store, job_id, request, check_fn), daemon=True).start()
     return job_id

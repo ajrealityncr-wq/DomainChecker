@@ -1,4 +1,8 @@
-"""Check domain availability using the official GoDaddy Domains API."""
+"""Check domain availability using the official GoDaddy Domains API.
+
+Settings come from settings.py. The only inputs are the domain list (--input) and the
+GoDaddy token (GODADDY_PAT in the environment or .env).
+"""
 
 from __future__ import annotations
 
@@ -17,15 +21,14 @@ from typing import Any, Iterable
 
 import requests
 
+import settings
+
 try:
     from dotenv import load_dotenv
 except ImportError:  # pragma: no cover - requirements.txt installs this package
     load_dotenv = None
 
 
-MAX_BATCH_SIZE = 25
-MAX_RETRY_DELAY_SECONDS = 120
-DEFAULT_RDAP_URL = "https://rdap.org/domain/{domain}"
 DOMAIN_RE = re.compile(
     r"^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$",
     re.IGNORECASE,
@@ -38,49 +41,7 @@ CSV_FIELDS = ["domain", "available", "price", "renewal_price", "currency", "prem
 EXCEL_HEADERS = ["input_domain", "domain", "status", "reason", "available", "price", "renewal_price", "currency", "premium", "definitive", "checked_at", "error"]
 EXCEL_WIDTHS = [24, 30, 14, 30, 12, 12, 14, 10, 12, 12, 22, 50]
 EXCEL_STATUS_FILLS = {"AVAILABLE": "C6EFCE", "TAKEN": "FFC7CE", "INVALID": "FFEB9C", "ERROR": "F4CCCC", "UNCHECKED": "D9EAF7"}
-
-
-DEFAULT_CONFIG: dict[str, Any] = {
-    "input_file": "domains.json",
-    "output_directory": "output",
-    "batch_size": 25,
-    "optimize_for": "ACCURACY",
-    "timeout_seconds": 30,
-    "delay_between_batches_seconds": 1,
-    "max_retries": 5,
-    "retry_backoff_seconds": 2,
-    "resume_enabled": True,
-    "checkpoint_file": "checkpoint.json",
-    "remove_duplicates": True,
-    "strip_protocol": True,
-    "remove_www": False,
-    "allowed_tlds": [],
-    "sort_available_by": "domain",
-    "save_json": True,
-    "save_csv": True,
-    "save_markdown": True,
-    "save_excel": False,
-    "save_buy_now": True,
-    "save_logs": True,
-    "log_level": "INFO",
-    "secrets_file": "GODADDY_PAT.json",
-    "godaddy_pat": None,
-    "godaddy": {
-        "base_url": "https://api.godaddy.com",
-        "availability_endpoint": "/v3/domains/check-availability",
-    },
-    "budget": {
-        "max_yearly_price": None,
-        "max_renewal_price": None,
-        "currency": "INR",
-        "require_renewal_price": False,
-    },
-    "prefilter": {
-        "enabled": False,
-        "rdap_url": DEFAULT_RDAP_URL,
-        "timeout_seconds": 10,
-    },
-}
+MICRO_UNIT_THRESHOLD = 1_000_000
 
 
 class AuthError(RuntimeError):
@@ -104,66 +65,35 @@ class CheckResult:
     raw: dict[str, Any] = field(default_factory=dict, repr=False)
 
 
+def default_config() -> dict[str, Any]:
+    """The checker's settings, built from settings.py. Nothing here is read from a file."""
+    return {
+        "batch_size": settings.BATCH_SIZE,
+        "optimize_for": settings.OPTIMIZE_FOR,
+        "timeout_seconds": settings.TIMEOUT_SECONDS,
+        "delay_between_batches_seconds": settings.DELAY_BETWEEN_BATCHES_SECONDS,
+        "max_retries": settings.MAX_RETRIES,
+        "retry_backoff_seconds": settings.RETRY_BACKOFF_SECONDS,
+        "api_url": settings.GODADDY_API_URL,
+        "output_directory": str(settings.OUTPUT_DIRECTORY),
+        "checkpoint_file": str(settings.CHECKPOINT_FILE),
+        "allowed_tlds": list(settings.ALLOWED_TLDS),
+        "sort_available_by": "domain",
+        "budget": {
+            "max_yearly_price": settings.DEFAULT_MAX_PRICE,
+            "max_renewal_price": None,
+            "currency": settings.CURRENCY,
+            "require_renewal_price": False,
+        },
+        "prefilter": {
+            "rdap_url": settings.RDAP_URL,
+            "timeout_seconds": settings.RDAP_TIMEOUT_SECONDS,
+        },
+    }
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-
-
-def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
-    merged = dict(base)
-    for key, value in override.items():
-        if isinstance(value, dict) and isinstance(merged.get(key), dict):
-            merged[key] = deep_merge(merged[key], value)
-        else:
-            merged[key] = value
-    return merged
-
-
-def load_config(path: Path) -> dict[str, Any]:
-    config = dict(DEFAULT_CONFIG)
-    if path.exists():
-        with path.open(encoding="utf-8") as handle:
-            loaded = json.load(handle)
-        if not isinstance(loaded, dict):
-            raise ValueError("config.json must contain a JSON object")
-        config = deep_merge(config, loaded)
-    config["batch_size"] = min(MAX_BATCH_SIZE, max(1, int(config["batch_size"])))
-    config["optimize_for"] = str(config["optimize_for"]).upper()
-    if config["optimize_for"] not in {"ACCURACY", "SPEED"}:
-        raise ValueError("optimize_for must be ACCURACY or SPEED")
-    return config
-
-
-def apply_cli_overrides(config: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
-    overrides = {
-        "input_file": args.input_file,
-        "batch_size": args.batch_size,
-        "optimize_for": args.optimize_for,
-        "timeout_seconds": args.timeout,
-        "delay_between_batches_seconds": args.delay,
-        "max_retries": args.retries,
-    }
-    for key, value in overrides.items():
-        if value is not None:
-            config[key] = value
-    if args.resume is not None:
-        config["resume_enabled"] = args.resume
-    if args.prefilter is not None:
-        config["prefilter"]["enabled"] = args.prefilter
-    config["batch_size"] = min(MAX_BATCH_SIZE, max(1, int(config["batch_size"])))
-    config["optimize_for"] = str(config["optimize_for"]).upper()
-    return config
-
-
-def load_domains(path: Path) -> list[Any]:
-    with path.open(encoding="utf-8") as handle:
-        data = json.load(handle)
-    if isinstance(data, list):
-        if all(isinstance(item, dict) and isinstance(item.get("domain"), str) for item in data):
-            return [item["domain"] for item in data]
-        return data
-    if isinstance(data, dict) and isinstance(data.get("domains"), list):
-        return data["domains"]
-    raise ValueError("Input JSON must be an array or an object containing a 'domains' array")
 
 
 def allowed_tld_set(config: dict[str, Any]) -> set[str]:
@@ -174,11 +104,7 @@ def normalize_domain(value: Any, config: dict[str, Any]) -> tuple[str | None, st
     if not isinstance(value, str):
         return None, str(value)
     original = value
-    domain = value.strip().lower()
-    if config.get("strip_protocol", True):
-        domain = re.sub(r"^https?://", "", domain).split("/", 1)[0]
-    if config.get("remove_www", False):
-        domain = re.sub(r"^www\.", "", domain)
+    domain = re.sub(r"^https?://", "", value.strip().lower()).split("/", 1)[0]
     if not domain or not DOMAIN_RE.fullmatch(domain):
         return None, original
     allowed = allowed_tld_set(config)
@@ -199,11 +125,23 @@ def prepare_domains(values: Iterable[Any], config: dict[str, Any]) -> tuple[list
             continue
         if original is not None:
             normalization_log.append({"original": original, "normalized": domain})
-        if config.get("remove_duplicates", True) and domain in seen:
+        if domain in seen:
             continue
         seen.add(domain)
         valid.append(domain)
     return valid, invalid, normalization_log
+
+
+def load_domains(path: Path) -> list[Any]:
+    with path.open(encoding="utf-8") as handle:
+        data = json.load(handle)
+    if isinstance(data, list):
+        if all(isinstance(item, dict) and isinstance(item.get("domain"), str) for item in data):
+            return [item["domain"] for item in data]
+        return data
+    if isinstance(data, dict) and isinstance(data.get("domains"), list):
+        return data["domains"]
+    raise ValueError("Input JSON must be an array or an object containing a 'domains' array")
 
 
 def batches(domains: list[str], size: int) -> Iterable[list[str]]:
@@ -236,48 +174,20 @@ def drop_resolved_errors(errors: list[dict[str, Any]], processed: dict[str, Any]
     return [item for item in errors if item.get("domain") not in processed]
 
 
-def api_url(config: dict[str, Any]) -> str:
-    environment_url = os.getenv("GODADDY_API_URL")
-    if environment_url:
-        return environment_url.rstrip("/")
-    godaddy = config["godaddy"]
-    return str(godaddy.get("base_url", "")).rstrip("/") + str(
-        godaddy.get("availability_endpoint", "/v3/domains/check-availability")
-    )
-
-
-def load_pat(cli_pat: str | None, config: dict[str, Any], root: Path) -> str | None:
-    if cli_pat:
-        print("Warning: --pat can end up in shell history; prefer GODADDY_PAT in .env.", file=sys.stderr)
-        return cli_pat
-    env_pat = os.getenv("GODADDY_PAT")
-    if env_pat:
-        return env_pat
-    secrets_path = Path(str(config.get("secrets_file", "GODADDY_PAT.json")))
-    if not secrets_path.is_absolute():
-        secrets_path = root / secrets_path
-    try:
-        with secrets_path.open(encoding="utf-8") as handle:
-            secrets = json.load(handle)
-        if isinstance(secrets, dict) and isinstance(secrets.get("GODADDY_PAT"), str) and secrets["GODADDY_PAT"].strip():
-            return secrets["GODADDY_PAT"].strip()
-    except (OSError, ValueError):
-        pass
-    config_pat = config.get("godaddy_pat")
-    if config_pat:
-        print("Warning: godaddy_pat in config.json stores the token in a tracked file; move it to .env.", file=sys.stderr)
-        return str(config_pat)
-    return None
+def load_pat() -> str | None:
+    """The token comes from the environment or .env only. It is never written to files or logs."""
+    token = os.getenv("GODADDY_PAT", "").strip()
+    return token or None
 
 
 def backoff_delay(config: dict[str, Any], attempt: int) -> float:
-    return min(float(MAX_RETRY_DELAY_SECONDS), float(config["retry_backoff_seconds"]) * (2**attempt))
+    return min(float(settings.MAX_RETRY_DELAY_SECONDS), float(config["retry_backoff_seconds"]) * (2**attempt))
 
 
 def retry_delay(response: requests.Response, config: dict[str, Any], attempt: int) -> float:
     """Honour a numeric Retry-After header (capped); otherwise fall back to exponential backoff."""
     try:
-        return min(float(MAX_RETRY_DELAY_SECONDS), max(0.0, float(response.headers.get("Retry-After", ""))))
+        return min(float(settings.MAX_RETRY_DELAY_SECONDS), max(0.0, float(response.headers.get("Retry-After", ""))))
     except ValueError:
         return backoff_delay(config, attempt)
 
@@ -289,7 +199,7 @@ def check_batch(batch: list[str], config: dict[str, Any], pat: str, logger: logg
     retries = int(config["max_retries"])
     for attempt in range(retries + 1):
         try:
-            response = requests.post(api_url(config), headers=headers, json=payload, timeout=float(config["timeout_seconds"]))
+            response = requests.post(config["api_url"], headers=headers, json=payload, timeout=float(config["timeout_seconds"]))
         except requests.RequestException as exc:
             if attempt < retries:
                 delay = backoff_delay(config, attempt)
@@ -352,17 +262,28 @@ def parse_response(items: list[Any], requested: list[str]) -> tuple[list[CheckRe
     return results, None
 
 
+def price_units_warning(raw_item: dict[str, Any]) -> str | None:
+    """Flag prices that look like micro-units (GoDaddy-style 1,000,000 per unit), which would break budget checks."""
+    price = raw_item.get("price")
+    if isinstance(price, (int, float)) and price >= MICRO_UNIT_THRESHOLD:
+        return (
+            f"Price {price} looks like micro-units (a whole-currency amount multiplied by 1,000,000). "
+            "Budget comparisons would be wrong until the units are confirmed."
+        )
+    return None
+
+
 def rdap_is_registered(domain: str, config: dict[str, Any]) -> bool | None:
     """True if the RDAP registry knows the domain, False if it reports not found, None if inconclusive.
 
     Only a True result is acted on; availability always comes from GoDaddy.
     """
-    settings = config["prefilter"]
+    rdap = config["prefilter"]
     try:
         response = requests.get(
-            str(settings["rdap_url"]).format(domain=domain),
+            rdap["rdap_url"].format(domain=domain),
             headers={"Accept": "application/rdap+json"},
-            timeout=float(settings["timeout_seconds"]),
+            timeout=float(rdap["timeout_seconds"]),
         )
     except requests.RequestException:
         return None
@@ -370,17 +291,6 @@ def rdap_is_registered(domain: str, config: dict[str, Any]) -> bool | None:
         return True
     if response.status_code == 404:
         return False
-    return None
-
-
-def price_units_warning(raw_item: dict[str, Any]) -> str | None:
-    """Flag prices that look like micro-units (GoDaddy-style 1,000,000 per unit), which would break budget checks."""
-    price = raw_item.get("price")
-    if isinstance(price, (int, float)) and price >= 1_000_000:
-        return (
-            f"Price {price} looks like micro-units (a whole-currency amount multiplied by 1,000,000). "
-            "Budget comparisons would be wrong until the units are confirmed."
-        )
     return None
 
 
@@ -470,13 +380,10 @@ def write_markdown(path: Path, title: str, rows: list[dict[str, Any]]) -> None:
 
 
 def write_excel(path: Path, rows: list[dict[str, Any]]) -> None:
-    try:
-        from openpyxl import Workbook
-        from openpyxl.styles import Font, PatternFill
-        from openpyxl.utils import get_column_letter
-        from openpyxl.worksheet.table import Table, TableStyleInfo
-    except ImportError as exc:
-        raise RuntimeError("Excel output requires openpyxl; install it with: pip install openpyxl") from exc
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill
+    from openpyxl.utils import get_column_letter
+    from openpyxl.worksheet.table import Table, TableStyleInfo
 
     workbook = Workbook()
     sheet = workbook.active
@@ -589,38 +496,33 @@ def save_outputs(root: Path, config: dict[str, Any], valid: list[str], invalid: 
     output.mkdir(parents=True, exist_ok=True)
     available = [record_for_output(item) for item in results if item.available is True]
     taken = [record_for_output(item) for item in results if item.available is False]
-    sort_available(available, config.get("sort_available_by", "domain"))
+    sort_available(available, config["sort_available_by"])
     invalid = list(dict.fromkeys(invalid))
-    if config.get("save_json", True):
-        write_json(output / "available_domains.json", available)
-        write_json(output / "taken_domains.json", taken)
-        write_json(output / "invalid_domains.json", invalid)
-        write_json(output / "error_domains.json", errors)
-        write_json(output / "unchecked_domains.json", unchecked)
-        write_json(output / "normalization_log.json", normalization_log)
-    if config.get("save_csv", True):
-        write_csv(output / "available_domains.csv", available)
-        write_csv(output / "taken_domains.csv", taken)
-        write_csv(output / "invalid_domains.csv", [{"domain": value} for value in invalid])
-        write_csv(output / "error_domains.csv", errors)
-        write_csv(output / "unchecked_domains.csv", [{"domain": value} for value in unchecked])
+    write_json(output / "available_domains.json", available)
+    write_json(output / "taken_domains.json", taken)
+    write_json(output / "invalid_domains.json", invalid)
+    write_json(output / "error_domains.json", errors)
+    write_json(output / "unchecked_domains.json", unchecked)
+    write_json(output / "normalization_log.json", normalization_log)
+    write_csv(output / "available_domains.csv", available)
+    write_csv(output / "taken_domains.csv", taken)
+    write_csv(output / "invalid_domains.csv", [{"domain": value} for value in invalid])
+    write_csv(output / "error_domains.csv", errors)
+    write_csv(output / "unchecked_domains.csv", [{"domain": value} for value in unchecked])
     rows = build_report_rows(valid, invalid, results, errors)
     available_rows = [row for row in rows if row["status"] == "AVAILABLE"]
     budget_rows = [row for row in available_rows if meets_budget(row, config)]
-    if config.get("save_markdown", True):
-        write_markdown(output / "domain_results.md", "Domain Check Results", rows)
-        write_markdown(output / "available_domains.md", "Available Domains", available_rows)
-        write_markdown(output / "budget_available_domains.md", "Budget-Qualified Available Domains", budget_rows)
-    if config.get("save_excel", False):
-        write_excel(output / "domain_results.xlsx", rows)
-        write_excel(output / "available_domains.xlsx", available_rows)
-        write_excel(output / "budget_available_domains.xlsx", budget_rows)
-    if config.get("save_buy_now", True):
-        buy_now = [item for item in available if meets_budget(item, config)]
-        with (output / "BUY_NOW.txt").open("w", encoding="utf-8") as handle:
-            handle.write("\n".join(item["domain"] for item in buy_now))
-            if buy_now:
-                handle.write("\n")
+    write_markdown(output / "domain_results.md", "Domain Check Results", rows)
+    write_markdown(output / "available_domains.md", "Available Domains", available_rows)
+    write_markdown(output / "budget_available_domains.md", "Budget-Qualified Available Domains", budget_rows)
+    write_excel(output / "domain_results.xlsx", rows)
+    write_excel(output / "available_domains.xlsx", available_rows)
+    write_excel(output / "budget_available_domains.xlsx", budget_rows)
+    buy_now = [item for item in available if meets_budget(item, config)]
+    with (output / "BUY_NOW.txt").open("w", encoding="utf-8") as handle:
+        handle.write("\n".join(item["domain"] for item in buy_now))
+        if buy_now:
+            handle.write("\n")
     summary = {
         "total_input": len(valid) + len(invalid),
         "unique_domains": len(valid),
@@ -642,17 +544,16 @@ def save_outputs(root: Path, config: dict[str, Any], valid: list[str], invalid: 
 def configure_logging(root: Path, config: dict[str, Any]) -> logging.Logger:
     logger = logging.getLogger("godaddy_checker")
     logger.handlers.clear()
-    logger.setLevel(getattr(logging, str(config.get("log_level", "INFO")).upper(), logging.INFO))
+    logger.setLevel(logging.INFO)
     formatter = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
     console = logging.StreamHandler()
     console.setFormatter(formatter)
     logger.addHandler(console)
-    if config.get("save_logs", True):
-        output = root / str(config["output_directory"])
-        output.mkdir(parents=True, exist_ok=True)
-        file_handler = logging.FileHandler(output / "checker.log", encoding="utf-8")
-        file_handler.setFormatter(formatter)
-        logger.addHandler(file_handler)
+    output = root / str(config["output_directory"])
+    output.mkdir(parents=True, exist_ok=True)
+    file_handler = logging.FileHandler(output / "checker.log", encoding="utf-8")
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
     return logger
 
 
@@ -683,31 +584,23 @@ def print_summary(output: Path, summary: dict[str, Any]) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Check domain availability with the official GoDaddy API")
-    parser.add_argument("--config", default="config.json")
-    parser.add_argument("--input", dest="input_file")
-    parser.add_argument("--pat", help=argparse.SUPPRESS)
-    parser.add_argument("--batch-size", type=int)
-    parser.add_argument("--optimize-for", choices=["ACCURACY", "SPEED"])
-    parser.add_argument("--timeout", type=float)
-    parser.add_argument("--delay", type=float)
-    parser.add_argument("--retries", type=int)
-    parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--test", action="store_true")
-    parser.add_argument("--resume", action=argparse.BooleanOptionalAction, default=None)
-    parser.add_argument("--force-recheck", action="store_true")
-    parser.add_argument("--prefilter", action=argparse.BooleanOptionalAction, default=None, help="Skip names RDAP reports as registered before calling GoDaddy")
+    parser.add_argument("--input", help=f"JSON list of domains (default: {settings.INPUT_FILE})")
+    parser.add_argument("--dry-run", action="store_true", help="Validate the list only; no network request")
+    parser.add_argument("--test", action="store_true", help="Check one domain and print the raw API item")
+    parser.add_argument("--force-recheck", action="store_true", help="Ignore the saved checkpoint")
     return parser
 
 
 def main() -> int:
     args = build_parser().parse_args()
-    root = Path(__file__).resolve().parent
+    root = settings.ROOT
     if load_dotenv:
         load_dotenv(root / ".env")
+    config = default_config()
     try:
-        config = apply_cli_overrides(load_config(root / args.config), args)
         logger = configure_logging(root, config)
-        values = load_domains(root / str(config["input_file"]))
+        input_path = Path(args.input) if args.input else root / settings.INPUT_FILE
+        values = load_domains(input_path)
         valid, invalid, normalization_log = prepare_domains(values, config)
     except (OSError, ValueError) as exc:
         print(f"Configuration/input error: {exc}", file=sys.stderr)
@@ -723,7 +616,7 @@ def main() -> int:
         print(f"Markdown report saved to: {output_dir / 'domain_results.md'}")
         return 0
 
-    pat = load_pat(args.pat, config, root)
+    pat = load_pat()
     if not pat:
         missing_pat_errors = [
             {
@@ -736,7 +629,7 @@ def main() -> int:
             for domain in valid
         ]
         save_outputs(root, config, valid, invalid, [], missing_pat_errors, [], utc_now(), 0, normalization_log)
-        print("Missing GoDaddy PAT. Set GODADDY_PAT, add it to .env, or pass --pat.", file=sys.stderr)
+        print("Missing GoDaddy PAT. Set GODADDY_PAT in the environment or in .env.", file=sys.stderr)
         print(f"Results with reasons saved to: {output_dir}", file=sys.stderr)
         return 2
     if args.test:
@@ -762,8 +655,7 @@ def main() -> int:
 
     started_at = utc_now()
     checkpoint_file = checkpoint_path(config, root)
-    resuming = bool(config.get("resume_enabled")) and not args.force_recheck
-    checkpoint = load_checkpoint(checkpoint_file) if resuming else {"processed": {}, "api_requests": 0}
+    checkpoint = {"processed": {}, "api_requests": 0} if args.force_recheck else load_checkpoint(checkpoint_file)
     processed: dict[str, dict[str, Any]] = checkpoint.setdefault("processed", {})
     errors: list[dict[str, Any]] = list(checkpoint.get("errors", []))
     requests_made = int(checkpoint.get("api_requests", 0))
@@ -771,8 +663,7 @@ def main() -> int:
 
     def save_progress() -> None:
         checkpoint.update({"processed": processed, "api_requests": requests_made, "errors": errors})
-        if config.get("resume_enabled"):
-            save_checkpoint(checkpoint_file, checkpoint)
+        save_checkpoint(checkpoint_file, checkpoint)
 
     def write_reports() -> dict[str, Any]:
         return save_outputs(
@@ -781,15 +672,14 @@ def main() -> int:
             started_at, requests_made, normalization_log,
         )
 
-    if config["prefilter"].get("enabled"):
-        candidates = pending_domains(valid, processed)
-        logger.info("RDAP prefilter checking %s domains", len(candidates))
-        for domain in candidates:
-            if rdap_is_registered(domain, config) is True:
-                logger.info("Taken (RDAP): %s", domain)
-                processed[domain] = record_for_output(CheckResult(domain=domain, available=False, status=RDAP_REGISTERED, checked_at=utc_now()))
-        results = results_from_processed(processed)
-        save_progress()
+    candidates = pending_domains(valid, processed)
+    logger.info("RDAP pre-check for %s domains", len(candidates))
+    for domain in candidates:
+        if rdap_is_registered(domain, config) is True:
+            logger.info("Taken (RDAP): %s", domain)
+            processed[domain] = record_for_output(CheckResult(domain=domain, available=False, status=RDAP_REGISTERED, checked_at=utc_now()))
+    results = results_from_processed(processed)
+    save_progress()
 
     batch_list = list(batches(pending_domains(valid, processed), config["batch_size"]))
     logger.info("Pending: %s domains in %s batches", sum(len(batch) for batch in batch_list), len(batch_list))

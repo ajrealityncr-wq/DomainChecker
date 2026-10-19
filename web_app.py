@@ -1,10 +1,6 @@
 """Web front end for keyword domain search.
 
-Run locally from the project folder:
-
-    python -m uvicorn web_app:app --reload
-
-then open http://127.0.0.1:8000
+Start it with run_server.py, which listens on 127.0.0.1 only, then open http://127.0.0.1:8000
 """
 
 from __future__ import annotations
@@ -17,50 +13,45 @@ from pydantic import BaseModel, Field
 
 import godaddy_checker as gc
 import search_service as ss
+import settings
 
-ROOT = Path(__file__).resolve().parent
+STATIC_DIRECTORY = settings.ROOT / "static"
 
 
 class SearchIn(BaseModel):
-    keyword: str = Field(min_length=2, max_length=60)
-    tlds: list[str] = Field(min_length=1, max_length=len(ss.ALLOWED_TLDS))
+    keyword: str = Field(min_length=2, max_length=settings.MAX_KEYWORD_LENGTH)
+    tlds: list[str] = Field(min_length=1, max_length=len(settings.ALLOWED_TLDS))
     max_price: float | None = Field(default=None, ge=0)
-    max_renewal_price: float | None = Field(default=None, ge=0)
-    currency: str = Field(default="INR", min_length=3, max_length=3)
-    candidate_limit: int = Field(default=50, ge=1, le=ss.MAX_CANDIDATES)
 
 
-def create_app(root: Path = ROOT, check_fn: ss.CheckFn = gc.check_batch) -> FastAPI:
+def create_app(check_fn: ss.CheckFn = gc.check_batch, store: ss.JobStore | None = None, static_dir: Path = STATIC_DIRECTORY) -> FastAPI:
     app = FastAPI(title="Domain Search")
-    store = ss.JobStore()
+    job_store = store or ss.JobStore()
 
     @app.get("/")
     def index() -> FileResponse:
-        return FileResponse(root / "static" / "index.html")
+        return FileResponse(static_dir / "index.html")
 
     @app.get("/api/config")
     def public_config() -> dict[str, object]:
-        config = gc.load_config(root / "config.json")
-        return {"tlds": list(ss.ALLOWED_TLDS), "default_max_price": config["budget"]["max_yearly_price"], "default_currency": config["budget"]["currency"]}
+        return {
+            "tlds": list(settings.ALLOWED_TLDS),
+            "default_tlds": list(settings.DEFAULT_TLDS),
+            "default_max_price": settings.DEFAULT_MAX_PRICE,
+            "currency": settings.CURRENCY,
+        }
 
     @app.post("/api/searches", status_code=202)
     def create_search(body: SearchIn) -> dict[str, str]:
         try:
-            request = ss.SearchRequest(
-                keyword=body.keyword,
-                tlds=tuple(body.tlds),
-                max_price=body.max_price,
-                max_renewal_price=body.max_renewal_price,
-                currency=body.currency.upper(),
-                candidate_limit=body.candidate_limit,
-            )
+            request = ss.SearchRequest(keyword=body.keyword, tlds=tuple(body.tlds), max_price=body.max_price)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        return {"id": ss.start_search(store, request, root, check_fn)}
+        return {"id": ss.start_search(job_store, request, check_fn)}
 
     @app.get("/api/searches/{job_id}")
     def get_search(job_id: str) -> dict[str, object]:
-        job = store.get(job_id)
+        job = job_store.get(job_id)
         if job is None:
             raise HTTPException(status_code=404, detail="Unknown search")
         return job

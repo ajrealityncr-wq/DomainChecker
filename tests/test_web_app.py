@@ -1,13 +1,12 @@
 import time
-from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
 import godaddy_checker as gc
+import search_service as ss
+import settings
 import web_app
-
-ROOT = Path(__file__).resolve().parents[1]
 
 
 def fake_check(batch, config, pat, logger):
@@ -19,9 +18,11 @@ def fake_check(batch, config, pat, logger):
 
 
 @pytest.fixture
-def client(monkeypatch):
-    monkeypatch.setenv("GODADDY_PAT", "token")
-    return TestClient(web_app.create_app(root=ROOT, check_fn=fake_check))
+def client(monkeypatch, tmp_path):
+    monkeypatch.setattr(gc, "load_pat", lambda: "token")
+    monkeypatch.setattr(gc, "rdap_is_registered", lambda domain, config: None)
+    store = ss.JobStore(tmp_path / "jobs.sqlite3")
+    return TestClient(web_app.create_app(check_fn=fake_check, store=store))
 
 
 def wait_for_job(client, job_id, timeout=10):
@@ -37,26 +38,30 @@ def wait_for_job(client, job_id, timeout=10):
 def test_index_serves_the_page(client):
     response = client.get("/")
     assert response.status_code == 200
-    assert "Domain Search" in response.text
+    assert 'id="keyword"' in response.text
+    assert 'id="max_renewal_price"' not in response.text
 
 
-def test_config_lists_extensions(client):
+def test_config_lists_extensions_and_defaults(client):
     body = client.get("/api/config").json()
-    assert body["tlds"] == [".com", ".in", ".ai", ".co"]
+    assert body["tlds"] == list(settings.ALLOWED_TLDS)
+    assert body["default_tlds"] == list(settings.DEFAULT_TLDS)
 
 
 def test_rejects_unknown_extension(client):
-    response = client.post("/api/searches", json={"keyword": "real estate", "tlds": [".xyz"]})
-    assert response.status_code == 422
+    assert client.post("/api/searches", json={"keyword": "real estate", "tlds": [".xyz"]}).status_code == 422
 
 
 def test_rejects_missing_extensions(client):
-    response = client.post("/api/searches", json={"keyword": "real estate", "tlds": []})
-    assert response.status_code == 422
+    assert client.post("/api/searches", json={"keyword": "real estate", "tlds": []}).status_code == 422
+
+
+def test_rejects_negative_price(client):
+    assert client.post("/api/searches", json={"keyword": "real estate", "tlds": [".com"], "max_price": -5}).status_code == 422
 
 
 def test_full_search_round_trip(client):
-    response = client.post("/api/searches", json={"keyword": "real estate", "tlds": [".com", ".in"], "max_price": 1000, "candidate_limit": 5})
+    response = client.post("/api/searches", json={"keyword": "real estate", "tlds": [".com", ".in"], "max_price": 1000})
     assert response.status_code == 202
     job = wait_for_job(client, response.json()["id"])
     assert job["status"] == "done"

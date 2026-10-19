@@ -5,9 +5,10 @@ import pytest
 import requests
 
 import godaddy_checker as gc
+import settings
 
 
-CONFIG = {**gc.DEFAULT_CONFIG, "allowed_tlds": [".com", ".in"]}
+CONFIG = {**gc.default_config(), "allowed_tlds": [".com", ".in"]}
 
 
 def fake_response(status=200, headers=None, body=None):
@@ -85,7 +86,7 @@ def test_parse_response_rejects_missing_availability():
 
 def test_retry_delay_honours_numeric_retry_after_and_caps_it():
     assert gc.retry_delay(fake_response(headers={"Retry-After": "1.5"}), CONFIG, 0) == 1.5
-    assert gc.retry_delay(fake_response(headers={"Retry-After": "9999"}), CONFIG, 0) == gc.MAX_RETRY_DELAY_SECONDS
+    assert gc.retry_delay(fake_response(headers={"Retry-After": "9999"}), CONFIG, 0) == settings.MAX_RETRY_DELAY_SECONDS
 
 
 def test_retry_delay_falls_back_for_http_date():
@@ -152,7 +153,7 @@ def test_sort_by_price_handles_missing_price():
 
 
 def test_save_outputs_writes_unchecked_and_summary(tmp_path):
-    config = {**gc.DEFAULT_CONFIG, "output_directory": "out", "save_csv": False}
+    config = {**gc.default_config(), "output_directory": "out", "save_csv": False}
     summary = gc.save_outputs(tmp_path, config, ["a1.com"], [], [], [], ["a1.com"], "start", 0, [])
     assert summary["unchecked"] == 1
     assert (tmp_path / "out" / "BUY_NOW.txt").exists()

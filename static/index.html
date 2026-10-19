@@ -47,23 +47,13 @@
         <input type="text" id="keyword" name="keyword" placeholder="e.g. automation, tag, real estate" required minlength="2" maxlength="60" autofocus>
       </label>
       <fieldset class="wide tlds" id="tlds" style="border:0;padding:0;margin:0" aria-label="Extensions"></fieldset>
-      <label>Max price (first year)
+      <label>Max price (first year, INR)
         <input type="number" id="max_price" min="0" step="any" placeholder="no limit">
       </label>
       <div class="wide"><button type="submit" id="submit">Search</button></div>
-      <details class="wide">
-        <summary>Advanced</summary>
-        <div class="advanced">
-          <label>Max renewal price
-            <input type="number" id="max_renewal_price" min="0" step="any" placeholder="no limit">
-          </label>
-          <label>Names to try
-            <input type="number" id="candidate_limit" min="1" max="200" value="50">
-          </label>
-        </div>
-      </details>
     </form>
     <div class="status" id="status" role="status" aria-live="polite"></div>
+    <p class="note">Names are checked for availability and price, not for trademarks. Check trademarks before you use a name.</p>
   </section>
 
   <section class="card hidden" id="results-card">
@@ -83,7 +73,6 @@
   const resultsBody = document.getElementById("results");
   const footnote = document.getElementById("footnote");
   let pollTimer = null;
-  let currency = "INR";
 
   function setStatus(text, isError = false) {
     statusEl.textContent = text;
@@ -179,9 +168,6 @@
       keyword: document.getElementById("keyword").value.trim(),
       tlds,
       max_price: optionalNumber("max_price"),
-      max_renewal_price: optionalNumber("max_renewal_price"),
-      currency,
-      candidate_limit: Number(document.getElementById("candidate_limit").value || 50),
     };
     try {
       const response = await fetch("/api/searches", {
@@ -208,14 +194,13 @@
     try {
       const response = await fetch("/api/config");
       const config = await response.json();
-      currency = config.default_currency;
       const fieldset = document.getElementById("tlds");
       for (const tld of config.tlds) {
         const label = document.createElement("label");
         const input = document.createElement("input");
         input.type = "checkbox";
         input.value = tld;
-        input.checked = tld === ".com" || tld === ".in";
+        input.checked = config.default_tlds.includes(tld);
         label.append(input, ` ${tld}`);
         fieldset.append(label);
       }
