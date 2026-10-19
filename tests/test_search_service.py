@@ -410,6 +410,13 @@ def test_history_marks_and_releases(tmp_path):
 
 def test_short_keywords_get_a_large_pool_of_names():
     names = ss.word_candidates("automation", None, 100000)
-    assert len(names) >= 300
+    assert len(names) >= 1500
     assert "myautomationhub" in names
     assert "automationhub" in names
+    assert "automations" in names
+    assert "automationhubpro" in names
+
+
+def test_single_suffix_names_rank_before_double_suffix_names():
+    names = ss.word_candidates("automation", None, 100000)
+    assert names.index("automationhub") < names.index("automationhubpro")
