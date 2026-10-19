@@ -35,7 +35,9 @@ For each search the app:
 5. Checks the rest with GoDaddy in batches of 25.
 6. Lists the available names, in-budget ones first, with the first-year and renewal price.
 
-Results are kept in `output/jobs.sqlite3`, so a finished search is still there after a restart.
+Results are kept in `output/app.sqlite3`, so a finished search is still there after a restart.
+
+**Every name is unique.** Each name the app generates is recorded, and a later search or generator run never produces it again. A name is released only when its check failed or the run stopped, so it can be tried later. Each keyword has a finite set of names (a few hundred for a typical keyword). When they are all used, the search says that no new names are left. Use a different keyword or extension to continue.
 
 ## Command line
 

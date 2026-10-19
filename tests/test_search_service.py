@@ -406,3 +406,10 @@ def test_history_marks_and_releases(tmp_path):
     assert history.unseen(["a1.com", "b2.com", "c3.com"]) == ["c3.com"]
     history.release(["a1.com"])
     assert history.unseen(["a1.com", "b2.com"]) == ["a1.com"]
+
+
+def test_short_keywords_get_a_large_pool_of_names():
+    names = ss.word_candidates("automation", None, 100000)
+    assert len(names) >= 300
+    assert "myautomationhub" in names
+    assert "automationhub" in names

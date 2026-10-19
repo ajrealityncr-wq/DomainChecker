@@ -120,6 +120,8 @@ def word_candidates(keyword: str, industry: str | None, limit: int) -> list[str]
     raw += [word + term for term in terms for word in paired]
     raw += [word + suffix for word in vocabulary for suffix in suffixes]
     raw += [term + second for index, term in enumerate(terms) for second in terms[index + 1:]]
+    # Prefix + keyword + suffix gives a much larger pool for short keywords. These rank last.
+    raw += [prefix + joined + suffix for prefix in prefixes for suffix in suffixes]
 
     pattern = re.compile(rf"[a-z]{{{settings.MIN_NAME_LENGTH},{settings.MAX_NAME_LENGTH}}}")
     names: list[str] = []
