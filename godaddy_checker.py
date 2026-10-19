@@ -373,6 +373,17 @@ def rdap_is_registered(domain: str, config: dict[str, Any]) -> bool | None:
     return None
 
 
+def price_units_warning(raw_item: dict[str, Any]) -> str | None:
+    """Flag prices that look like micro-units (GoDaddy-style 1,000,000 per unit), which would break budget checks."""
+    price = raw_item.get("price")
+    if isinstance(price, (int, float)) and price >= 1_000_000:
+        return (
+            f"Price {price} looks like micro-units (a whole-currency amount multiplied by 1,000,000). "
+            "Budget comparisons would be wrong until the units are confirmed."
+        )
+    return None
+
+
 def checkpoint_path(config: dict[str, Any], root: Path) -> Path:
     path = Path(str(config["checkpoint_file"]))
     return path if path.is_absolute() else root / path
@@ -743,6 +754,10 @@ def main() -> int:
         print(f"API test succeeded for {results[0].domain}.")
         print("Raw GoDaddy item (confirm price units and currency before trusting budget filters):")
         print(json.dumps(results[0].raw, indent=2))
+        warning = price_units_warning(results[0].raw)
+        if warning:
+            print(f"WARNING: {warning}", file=sys.stderr)
+            return 1
         return 0
 
     started_at = utc_now()

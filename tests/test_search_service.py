@@ -192,3 +192,9 @@ def test_unmatched_keyword_gets_no_real_estate_words(monkeypatch, generation_con
 def test_matched_keyword_uses_industry_words_combined_with_keyword(generation_config):
     names = ss.word_candidates("real estate", generation_config, "real_estate", 200)
     assert any("realhomes" == name or "realrent" == name for name in names)
+
+
+def test_general_keywords_get_a_wide_set_of_affixes(generation_config):
+    names = ss.word_candidates("tag", generation_config, None, 200)
+    assert len(names) >= 60
+    assert "tagwise" in names or "tagbox" in names or "tagcloud" in names

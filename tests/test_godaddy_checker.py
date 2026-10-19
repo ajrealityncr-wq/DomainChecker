@@ -172,3 +172,14 @@ def test_rdap_network_failure_is_inconclusive(monkeypatch):
         raise requests.ConnectionError("no route")
     monkeypatch.setattr(gc.requests, "get", boom)
     assert gc.rdap_is_registered("a1.com", CONFIG) is None
+
+
+# --- price units ----------------------------------------------------------
+
+def test_micro_unit_prices_are_flagged():
+    assert gc.price_units_warning({"price": 11990000}) is not None
+
+
+def test_whole_currency_prices_are_not_flagged():
+    assert gc.price_units_warning({"price": 1000}) is None
+    assert gc.price_units_warning({"price": None}) is None

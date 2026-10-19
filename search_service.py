@@ -73,8 +73,8 @@ def word_candidates(keyword: str, config: dict[str, Any], industry: str | None, 
     vocabulary = gd.normalize_list(word_cfg.get("vocabulary_by_industry", {}).get(industry, [])) if industry else []
     # A vocabulary word that already contains the keyword ("realty" for "real") is not paired with it again.
     paired = [word for word in vocabulary if not any(term in word for term in terms)]
-    prefixes = gd.normalize_list(word_cfg.get("prefixes", []))
-    suffixes = gd.normalize_list(word_cfg.get("suffixes", []))
+    prefixes = list(dict.fromkeys(gd.normalize_list(word_cfg.get("prefixes", [])) + gd.normalize_list(word_cfg.get("extra_prefixes", []))))
+    suffixes = list(dict.fromkeys(gd.normalize_list(word_cfg.get("suffixes", [])) + gd.normalize_list(word_cfg.get("extra_suffixes", []))))
     max_length = int(word_cfg.get("max_length", 14))
     blocked_terms, blocked_suffixes = word_blocklist(config)
 
