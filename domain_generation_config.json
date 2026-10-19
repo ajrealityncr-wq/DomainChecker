@@ -208,5 +208,98 @@
       "group",
       "solutions"
     ]
+  },
+  "word_generation": {
+    "max_length": 14,
+    "vocabulary_by_industry": {
+      "real_estate": [
+        "realty",
+        "estate",
+        "homes",
+        "home",
+        "property",
+        "properties",
+        "land",
+        "rent",
+        "house",
+        "houses",
+        "urban",
+        "key",
+        "roof",
+        "brick",
+        "nest",
+        "space",
+        "living",
+        "broker",
+        "listing",
+        "tenant",
+        "lease",
+        "villa",
+        "plot"
+      ],
+      "general": [
+        "hub",
+        "nest",
+        "space",
+        "link",
+        "works",
+        "place",
+        "point",
+        "zone",
+        "spot",
+        "base"
+      ],
+      "proptech": [
+        "prop",
+        "data",
+        "grid",
+        "home",
+        "urban",
+        "logic",
+        "node",
+        "realty",
+        "estate"
+      ],
+      "technology": [
+        "byte",
+        "data",
+        "code",
+        "grid",
+        "logic",
+        "node",
+        "stack",
+        "cloud",
+        "labs"
+      ],
+      "finance": [
+        "fund",
+        "capital",
+        "cash",
+        "vault",
+        "credit",
+        "loan",
+        "wealth",
+        "gain"
+      ]
+    },
+    "prefixes": [
+      "my",
+      "the",
+      "go",
+      "smart",
+      "city",
+      "get",
+      "best"
+    ],
+    "suffixes": [
+      "hub",
+      "pro",
+      "zone",
+      "spot",
+      "now",
+      "plus",
+      "direct",
+      "point"
+    ]
   }
 }

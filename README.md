@@ -100,6 +100,31 @@ A checkpoint is saved after every batch, so a resumed run does not re-check doma
 
 GoDaddy availability can change between this check and registration. Always re-check the final price and availability at checkout.
 
+## Web app
+
+The web app is the main way to use the product: describe a business, pick extensions, and get the available names within your price.
+
+```powershell
+python -m uvicorn web_app:app --reload
+```
+
+Open http://127.0.0.1:8000. Enter a keyword such as `real estate`, tick `.com` and/or `.in`, set the maximum first-year and renewal prices, and submit. The page polls the search and shows each available domain with its price and whether it is within budget. The price fields are optional.
+
+How a search runs:
+
+1. Names are built from the keyword and the industry vocabulary in `domain_generation_config.json` (`word_generation`). The exact keyword phrase ranks first, then phrases with affixes, then industry words.
+2. Each name is combined with the selected extensions.
+3. Optionally (`prefilter.enabled`), RDAP removes names it reports as registered.
+4. GoDaddy checks the rest in batches of 25. Only GoDaddy's `available: true` counts as available.
+5. Available names are tagged with whether they meet the budget, and sorted with in-budget names first.
+
+Limitations of this version:
+
+- Jobs are held in memory and are lost when the server restarts. A database is the next step.
+- There is no trademark screening. Check names before using them.
+- Prices are indicative API prices. The renewal price is shown next to the first-year price, and both must be checked at checkout.
+- The app has no login. Run it on your own machine, or add authentication before exposing it.
+
 ## Tests
 
 ```powershell
