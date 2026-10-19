@@ -60,27 +60,34 @@ def word_blocklist(config: dict[str, Any]) -> tuple[list[str], list[str]]:
     return list(dict.fromkeys(terms)), list(dict.fromkeys(suffixes))
 
 
-def word_candidates(keyword: str, config: dict[str, Any], industry: str, limit: int) -> list[str]:
-    """Readable names built from the keyword, the industry vocabulary and affixes, best first."""
+def word_candidates(keyword: str, config: dict[str, Any], industry: str | None, limit: int) -> list[str]:
+    """Names that contain the keyword, built with affixes and (when the keyword fits an industry) its vocabulary.
+
+    Every returned name contains at least one keyword word, so "automation" returns automation names
+    and "tag" returns tag names. The industry vocabulary is only used when the keyword matched a profile.
+    """
     word_cfg = config.get("word_generation", {})
     terms = gd.tokenize_keywords(keyword)
     if not terms:
         raise ValueError("Keyword needs at least one word of three or more letters")
-    vocabulary = gd.normalize_list(word_cfg.get("vocabulary_by_industry", {}).get(industry, []))
+    vocabulary = gd.normalize_list(word_cfg.get("vocabulary_by_industry", {}).get(industry, [])) if industry else []
+    # A vocabulary word that already contains the keyword ("realty" for "real") is not paired with it again.
+    paired = [word for word in vocabulary if not any(term in word for term in terms)]
     prefixes = gd.normalize_list(word_cfg.get("prefixes", []))
     suffixes = gd.normalize_list(word_cfg.get("suffixes", []))
     max_length = int(word_cfg.get("max_length", 14))
     blocked_terms, blocked_suffixes = word_blocklist(config)
 
-    core = list(dict.fromkeys(terms + vocabulary))
     joined = "".join(terms)
-    raw = list(terms)
-    raw.append(joined)
+    raw = [joined]
     raw += [joined + suffix for suffix in suffixes]
     raw += [prefix + joined for prefix in prefixes]
-    raw += [word + suffix for word in core for suffix in suffixes]
-    raw += [prefix + word for word in core for prefix in prefixes]
-    raw += [first + second for first in core for second in core if first != second and not (first in terms and second in terms)]
+    raw += [term + suffix for term in terms for suffix in suffixes]
+    raw += [prefix + term for term in terms for prefix in prefixes]
+    raw += [term + word for term in terms for word in paired]
+    raw += [word + term for term in terms for word in paired]
+    raw += [word + suffix for word in vocabulary for suffix in suffixes]
+    raw += [term + second for index, term in enumerate(terms) for second in terms[index + 1:]]
 
     names: list[str] = []
     seen: set[str] = set()
@@ -88,31 +95,33 @@ def word_candidates(keyword: str, config: dict[str, Any], industry: str, limit: 
     for name in raw:
         if name in seen or not pattern.fullmatch(name):
             continue
+        if not any(term in name for term in terms):
+            continue
         if any(term in name for term in blocked_terms):
             continue
         if any(name.endswith(suffix) for suffix in blocked_suffixes):
             continue
         seen.add(name)
         names.append(name)
-    names.sort(key=lambda name: (_rank_tier(name, joined, vocabulary), len(name), name))
+    names.sort(key=lambda name: (_rank_tier(name, joined), len(name), name))
     return names[:limit]
 
 
-def _rank_tier(name: str, joined: str, vocabulary: list[str]) -> int:
-    """0: exact keyword phrase. 1: phrase with an affix. 2: industry vocabulary. 3: everything else."""
+def _rank_tier(name: str, joined: str) -> int:
+    """0: the exact keyword. 1: the keyword phrase with an affix. 2: everything else that contains a keyword word."""
     if name == joined:
         return 0
     if joined in name:
         return 1
-    if any(word in name for word in vocabulary):
-        return 2
-    return 3
+    return 2
 
 
-def plan_domains(request: SearchRequest, generation_config: dict[str, Any]) -> tuple[str, list[str]]:
+def plan_domains(request: SearchRequest, generation_config: dict[str, Any]) -> tuple[str | None, list[str]]:
     intent = gd.infer_intent(request.keyword, generation_config)
-    names = word_candidates(request.keyword, generation_config, intent["industry"], request.candidate_limit)
-    return intent["industry"], [name + tld for name in names for tld in request.tlds]
+    # Only a keyword that matched an industry profile brings in that industry's vocabulary.
+    industry = intent["industry"] if intent["source"] == "keywords" else None
+    names = word_candidates(request.keyword, generation_config, industry, request.candidate_limit)
+    return industry, [name + tld for name in names for tld in request.tlds]
 
 
 def budget_config(request: SearchRequest) -> dict[str, Any]:

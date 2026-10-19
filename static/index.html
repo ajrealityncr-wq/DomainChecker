@@ -30,30 +30,38 @@
     .in { color: var(--ok); } .out { color: var(--muted); }
     .note { font-size: 0.85rem; color: var(--muted); margin-top: 12px; }
     .hidden { display: none; }
+    details summary { cursor: pointer; color: var(--muted); }
+    .advanced { display: grid; gap: 12px; grid-template-columns: 1fr; margin-top: 12px; }
+    @media (min-width: 640px) { .advanced { grid-template-columns: 1fr 1fr; } }
     @media (max-width: 520px) { th:nth-child(4), td:nth-child(4) { display: none; } }
   </style>
 </head>
 <body>
 <main>
   <h1>Domain Search</h1>
-  <p class="lead">Describe your business, pick extensions, and see which names are available and within your price.</p>
+  <p class="lead">Enter a keyword, pick extensions, and see which names are available.</p>
 
   <section class="card">
     <form id="search-form">
-      <label>Keyword or business
-        <input type="text" id="keyword" name="keyword" placeholder="e.g. real estate" required minlength="2" maxlength="60">
+      <label class="wide">Keyword
+        <input type="text" id="keyword" name="keyword" placeholder="e.g. automation, tag, real estate" required minlength="2" maxlength="60" autofocus>
       </label>
-      <label>Max first-year price
+      <fieldset class="wide tlds" id="tlds" style="border:0;padding:0;margin:0" aria-label="Extensions"></fieldset>
+      <label>Max price (first year)
         <input type="number" id="max_price" min="0" step="any" placeholder="no limit">
       </label>
-      <label>Max renewal price
-        <input type="number" id="max_renewal_price" min="0" step="any" placeholder="no limit">
-      </label>
-      <fieldset class="wide tlds" id="tlds" style="border:0;padding:0;margin:0"></fieldset>
-      <label>Names to try
-        <input type="number" id="candidate_limit" min="1" max="200" value="50">
-      </label>
       <div class="wide"><button type="submit" id="submit">Search</button></div>
+      <details class="wide">
+        <summary>Advanced</summary>
+        <div class="advanced">
+          <label>Max renewal price
+            <input type="number" id="max_renewal_price" min="0" step="any" placeholder="no limit">
+          </label>
+          <label>Names to try
+            <input type="number" id="candidate_limit" min="1" max="200" value="50">
+          </label>
+        </div>
+      </details>
     </form>
     <div class="status" id="status" role="status" aria-live="polite"></div>
   </section>

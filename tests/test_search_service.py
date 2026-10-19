@@ -161,3 +161,34 @@ def test_failed_batch_is_reported_not_marked_available(monkeypatch):
     outcome = ss.execute(request, ROOT, flaky, lambda **fields: None)
     assert outcome["offers"] == []
     assert len(outcome["failed"]) == 3
+
+
+# --- keyword anchoring ----------------------------------------------------
+
+@pytest.mark.parametrize("keyword", ["automation", "tag", "real estate"])
+def test_every_name_contains_the_keyword(generation_config, keyword):
+    industry = None
+    names = ss.word_candidates(keyword, generation_config, industry, 100)
+    terms = gd_terms(keyword)
+    assert names, f"no candidates for {keyword!r}"
+    assert all(any(term in name for term in terms) for name in names)
+
+
+def gd_terms(keyword):
+    import generate_domains as gd
+    return gd.tokenize_keywords(keyword)
+
+
+def test_unmatched_keyword_gets_no_real_estate_words(monkeypatch, generation_config):
+    import generate_domains as gd
+    intent = gd.infer_intent("automation", generation_config)
+    assert intent["source"] != "keywords"  # no industry profile matched
+    industry, domains = ss.plan_domains(ss.SearchRequest(keyword="automation", tlds=(".com",), candidate_limit=50), generation_config)
+    assert industry is None
+    assert not any(word in domain for domain in domains for word in ("realty", "homes", "property", "estate"))
+    assert "automation.com" in domains
+
+
+def test_matched_keyword_uses_industry_words_combined_with_keyword(generation_config):
+    names = ss.word_candidates("real estate", generation_config, "real_estate", 200)
+    assert any("realhomes" == name or "realrent" == name for name in names)
