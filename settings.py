@@ -17,6 +17,9 @@ DEFAULT_MAX_PRICE = 5000
 MAX_PRICE_LIMIT = 1_000_000
 MAX_KEYWORD_LENGTH = 60
 CANDIDATES_PER_SEARCH = 50
+# Names generated per keyword before already-used names are removed. Large enough that
+# a repeat search still finds new names.
+CANDIDATE_POOL_PER_KEYWORD = 5000
 
 # ---- Web app limits and access --------------------------------------------
 # The app runs on this computer only. Requests must come from these hosts and origins.

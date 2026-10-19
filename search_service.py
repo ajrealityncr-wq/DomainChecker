@@ -23,8 +23,10 @@ import godaddy_checker as gc
 import settings
 import trademark
 from cache import DomainCache
+from history import DomainHistory
 
 logger = logging.getLogger("search")
+_plan_lock = threading.Lock()
 KEYWORD_RE = re.compile(r"^[A-Za-z][A-Za-z \-]*$")
 MIN_KEYWORD_WORD = 3
 
@@ -118,6 +120,8 @@ def word_candidates(keyword: str, industry: str | None, limit: int) -> list[str]
     raw += [word + term for term in terms for word in paired]
     raw += [word + suffix for word in vocabulary for suffix in suffixes]
     raw += [term + second for index, term in enumerate(terms) for second in terms[index + 1:]]
+    # Prefix + keyword + suffix gives a much larger pool for short keywords. These rank last.
+    raw += [prefix + joined + suffix for prefix in prefixes for suffix in suffixes]
 
     pattern = re.compile(rf"[a-z]{{{settings.MIN_NAME_LENGTH},{settings.MAX_NAME_LENGTH}}}")
     names: list[str] = []
@@ -150,7 +154,7 @@ def _rank_tier(name: str, joined: str) -> int:
 
 def plan_domains(request: SearchRequest) -> tuple[str | None, list[str]]:
     industry = infer_industry(request.keyword)
-    names = word_candidates(request.keyword, industry, settings.CANDIDATES_PER_SEARCH)
+    names = word_candidates(request.keyword, industry, settings.CANDIDATE_POOL_PER_KEYWORD)
     return industry, [name + tld for name in names for tld in request.tlds]
 
 
@@ -188,36 +192,65 @@ def _registered_status(domains: list[str], config: dict[str, Any], cache: Domain
     return status
 
 
+def next_domains(request: SearchRequest, history: DomainHistory) -> tuple[str | None, list[str]]:
+    """The next names for this request that have never been generated, and record them as generated.
+
+    Runs under one lock, so two searches at the same time cannot take the same name.
+    """
+    with _plan_lock:
+        industry, domains = plan_domains(request)
+        unseen = history.unseen(domains)
+        if not unseen:
+            raise SearchError("No new names are left for this keyword. Try a different keyword or extension.")
+        chosen = unseen[: settings.CANDIDATES_PER_SEARCH * len(request.tlds)]
+        history.mark_seen(chosen)
+    return industry, chosen
+
+
 def execute(request: SearchRequest, check_fn: CheckFn, progress: Progress,
-            cache: DomainCache | None = None, screen: trademark.TrademarkScreen | None = None) -> dict[str, Any]:
+            cache: DomainCache | None = None, screen: trademark.TrademarkScreen | None = None,
+            history: DomainHistory | None = None) -> dict[str, Any]:
     """Run one search end to end. `progress` receives keyword updates for the job record."""
     config = gc.default_config()
     cache = cache or DomainCache()
     screen = screen or trademark.NotConfiguredScreen()
-    industry, domains = plan_domains(request)
-    progress(industry=industry, total=len(domains), checked=0)
+    history = history or DomainHistory()
 
     pat = gc.load_pat()
     if not pat:
         raise SearchError("GoDaddy token is not configured. Set GODADDY_PAT in the environment or .env, then restart.")
 
-    registered = _registered_status(domains, config, cache, progress)
-    remaining = [domain for domain in domains if registered.get(domain) is not True]
-    skipped_registered = len(domains) - len(remaining)
+    industry, domains = next_domains(request, history)
+    answered: set[str] = set()  # names whose outcome is known: skipped, cached, or sent to GoDaddy
+    try:
+        progress(industry=industry, total=len(domains), checked=0)
+        registered = _registered_status(domains, config, cache, progress)
+        remaining = [domain for domain in domains if registered.get(domain) is not True]
+        remaining_set = set(remaining)
+        skipped_registered = len(domains) - len(remaining)
+        answered.update(domain for domain in domains if domain not in remaining_set)
 
-    budget = budget_config(request)
-    known = cache.get_many("godaddy", remaining)
-    to_check = [domain for domain in remaining if domain not in known]
-    results = [gc.result_from_record(record) for record in known.values() if record.get("available") in {True, False}]
-    already = len(known)
-    progress(total=len(remaining), checked=already, skipped_registered=skipped_registered, stage="Checking availability with GoDaddy")
+        budget = budget_config(request)
+        known = cache.get_many("godaddy", remaining)
+        answered.update(known)
+        to_check = [domain for domain in remaining if domain not in known]
+        results = [gc.result_from_record(record) for record in known.values() if record.get("available") in {True, False}]
+        already = len(known)
+        progress(total=len(remaining), checked=already, skipped_registered=skipped_registered, stage="Checking availability with GoDaddy")
 
-    def on_batch(batch: list[str], batch_results: list[gc.CheckResult], error: str | None, checked: int) -> None:
-        progress(checked=already + checked)
+        def on_batch(batch: list[str], batch_results: list[gc.CheckResult], error: str | None, checked: int) -> None:
+            answered.update(batch)
+            progress(checked=already + checked)
 
-    fresh, failed = gc.check_in_batches(to_check, config, pat, check_fn, logger, on_batch)
-    results.extend(fresh)
-    cache.put_many("godaddy", {result.domain: gc.record_for_output(result) for result in fresh})
+        fresh, failed = gc.check_in_batches(to_check, config, pat, check_fn, logger, on_batch)
+        results.extend(fresh)
+        cache.put_many("godaddy", {result.domain: gc.record_for_output(result) for result in fresh})
+    except BaseException:
+        # Names that were never answered can be tried again later.
+        history.release([domain for domain in domains if domain not in answered])
+        raise
+    # Names GoDaddy did not answer for can be tried again later.
+    history.release(failed)
 
     offers = [to_offer(result, budget) for result in results if result.available is True]
     offers = trademark.apply_screen(offers, screen)
@@ -234,7 +267,8 @@ def execute(request: SearchRequest, check_fn: CheckFn, progress: Progress,
 class JobStore:
     """Job records in SQLite. Jobs running at shutdown are marked failed on start; old jobs are removed."""
 
-    def __init__(self, path: Path = settings.APP_DATABASE) -> None:
+    def __init__(self, path: Path | None = None) -> None:
+        path = path or settings.APP_DATABASE
         self._path = path
         self._lock = threading.Lock()
         path.parent.mkdir(parents=True, exist_ok=True)
