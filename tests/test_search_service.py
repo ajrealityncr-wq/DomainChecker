@@ -330,3 +330,18 @@ def test_start_search_runs_in_background(online, store, cache):
             break
         time.sleep(0.05)
     assert store.get(job_id)["status"] == "done"
+
+
+# --- no limit set (review item 5) ---------------------------------------------
+
+def test_offers_have_no_budget_flag_when_no_limit_is_set(online, cache):
+    outcome = ss.execute(ss.SearchRequest(keyword="real estate", tlds=(".com",)), fake_check("real"), lambda **fields: None, cache=cache)
+    assert outcome["offers"]
+    assert all(offer["within_budget"] is None for offer in outcome["offers"])
+
+
+def test_renewal_cap_alone_still_flags_budget(online, cache):
+    request = ss.SearchRequest(keyword="real estate", tlds=(".com",), max_renewal_price=950)
+    outcome = ss.execute(request, fake_check("real", price=1000), lambda **fields: None, cache=cache)
+    assert outcome["offers"]
+    assert all(offer["within_budget"] is True for offer in outcome["offers"])  # fake renewal is 900, under 950

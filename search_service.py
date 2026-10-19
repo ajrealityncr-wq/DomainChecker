@@ -15,7 +15,6 @@ import sqlite3
 import threading
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -173,7 +172,8 @@ def to_offer(result: gc.CheckResult, budget: dict[str, Any]) -> dict[str, Any]:
         "price": result.price,
         "renewal_price": result.renewal_price,
         "currency": result.currency,
-        "within_budget": gc.meets_budget(record, budget),
+        # None when no price limit is set, so the page can say "no limit set" instead of "within budget".
+        "within_budget": gc.meets_budget(record, budget) if gc.has_limits(budget) else None,
     }
 
 
@@ -182,20 +182,9 @@ def _registered_status(domains: list[str], config: dict[str, Any], cache: Domain
     status: dict[str, bool | None] = dict(cache.get_many("rdap", domains))
     todo = [domain for domain in domains if domain not in status]
     progress(total=len(domains), checked=len(status), stage="Checking for registered names")
-    done = 0
-    with ThreadPoolExecutor(max_workers=settings.RDAP_WORKERS) as pool:
-        futures = {pool.submit(gc.rdap_is_registered, domain, config): domain for domain in todo}
-        for future in as_completed(futures):
-            domain = futures[future]
-            try:
-                status[domain] = future.result()
-            except Exception:
-                logger.exception("RDAP lookup failed for %s", domain)
-                status[domain] = None
-            done += 1
-            if done % 10 == 0 or done == len(todo):
-                progress(checked=len(status))
-    cache.put_many("rdap", {domain: status[domain] for domain in todo if status[domain] is not None})
+    fresh = gc.rdap_statuses(todo, config, on_progress=lambda done: progress(checked=len(status) + done))
+    status.update(fresh)
+    cache.put_many("rdap", {domain: value for domain, value in fresh.items() if value is not None})
     return status
 
 
@@ -220,26 +209,20 @@ def execute(request: SearchRequest, check_fn: CheckFn, progress: Progress,
     known = cache.get_many("godaddy", remaining)
     to_check = [domain for domain in remaining if domain not in known]
     results = [gc.result_from_record(record) for record in known.values() if record.get("available") in {True, False}]
-    checked = len(known)
-    progress(total=len(remaining), checked=checked, skipped_registered=skipped_registered, stage="Checking availability with GoDaddy")
+    already = len(known)
+    progress(total=len(remaining), checked=already, skipped_registered=skipped_registered, stage="Checking availability with GoDaddy")
 
-    failed: list[str] = []
-    new_records: dict[str, Any] = {}
-    for batch in gc.batches(to_check, config["batch_size"]):
-        batch_results, error = check_fn(batch, config, pat, logger)
-        if error:
-            logger.warning("Batch failed: %s", error)
-            failed.extend(batch)
-        else:
-            results.extend(batch_results)
-            new_records.update({result.domain: gc.record_for_output(result) for result in batch_results})
-        checked += len(batch)
-        progress(checked=checked)
-    cache.put_many("godaddy", new_records)
+    def on_batch(batch: list[str], batch_results: list[gc.CheckResult], error: str | None, checked: int) -> None:
+        progress(checked=already + checked)
+
+    fresh, failed = gc.check_in_batches(to_check, config, pat, check_fn, logger, on_batch)
+    results.extend(fresh)
+    cache.put_many("godaddy", {result.domain: gc.record_for_output(result) for result in fresh})
 
     offers = [to_offer(result, budget) for result in results if result.available is True]
     offers = trademark.apply_screen(offers, screen)
-    offers.sort(key=lambda offer: (not offer["within_budget"], offer["price"] is None, offer["price"] or 0, offer["domain"]))
+    # Names that break a limit go last. Names with no limit set (within_budget None) sort by price.
+    offers.sort(key=lambda offer: (offer["within_budget"] is False, offer["price"] is None, offer["price"] or 0, offer["domain"]))
     return {
         "offers": offers,
         "failed": failed,

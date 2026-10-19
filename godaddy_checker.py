@@ -14,10 +14,11 @@ import os
 import re
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 import requests
 
@@ -36,6 +37,7 @@ DOMAIN_RE = re.compile(
 RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
 AUTH_STATUS_CODES = {401, 403}
 RDAP_REGISTERED = "RDAP_REGISTERED"
+logger = logging.getLogger("godaddy_checker")
 RECORD_FIELDS = {"domain", "available", "price", "renewal_price", "currency", "premium", "definitive", "status", "restrictions", "checked_at", "error", "api_success"}
 CSV_FIELDS = ["domain", "available", "price", "renewal_price", "currency", "premium", "definitive", "status", "checked_at"]
 EXCEL_HEADERS = ["input_domain", "domain", "status", "reason", "available", "price", "renewal_price", "currency", "premium", "definitive", "checked_at", "error"]
@@ -175,7 +177,13 @@ def drop_resolved_errors(errors: list[dict[str, Any]], processed: dict[str, Any]
 
 
 def load_pat() -> str | None:
-    """The token comes from the environment or .env only. It is never written to files or logs."""
+    """The token comes from the environment or the project's .env file. It is never written to files or logs.
+
+    .env is read here, not only in the command-line entry point, so the web app finds the token too.
+    Variables already set in the environment take precedence over .env.
+    """
+    if load_dotenv:
+        load_dotenv(settings.ROOT / ".env")
     token = os.getenv("GODADDY_PAT", "").strip()
     return token or None
 
@@ -292,6 +300,53 @@ def rdap_is_registered(domain: str, config: dict[str, Any]) -> bool | None:
     if response.status_code == 404:
         return False
     return None
+
+
+def rdap_statuses(domains: list[str], config: dict[str, Any], max_workers: int = settings.RDAP_WORKERS,
+                   on_progress: Callable[[int], None] | None = None) -> dict[str, bool | None]:
+    """RDAP answer for each domain, looked up in parallel. A failed lookup counts as inconclusive (None)."""
+    status: dict[str, bool | None] = {}
+    if not domains:
+        return status
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {pool.submit(rdap_is_registered, domain, config): domain for domain in domains}
+        for done, future in enumerate(as_completed(futures), 1):
+            domain = futures[future]
+            try:
+                status[domain] = future.result()
+            except Exception:
+                logger.exception("RDAP lookup failed for %s", domain)
+                status[domain] = None
+            if on_progress and (done % 10 == 0 or done == len(domains)):
+                on_progress(done)
+    return status
+
+
+def check_in_batches(domains: list[str], config: dict[str, Any], pat: str, check_fn: Callable[..., Any], log: logging.Logger,
+                     on_batch: Callable[[list[str], list["CheckResult"], str | None, int], None] | None = None,
+                     ) -> tuple[list["CheckResult"], list[str]]:
+    """Check domains in batches. Returns (results, failed domains).
+
+    on_batch(batch, results, error, checked_so_far) runs after each batch, so callers can save progress.
+    AuthError from check_fn is not caught here; it stops the whole run.
+    """
+    results: list[CheckResult] = []
+    failed: list[str] = []
+    checked = 0
+    batch_list = list(batches(domains, config["batch_size"]))
+    for index, batch in enumerate(batch_list, 1):
+        batch_results, error = check_fn(batch, config, pat, log)
+        if error:
+            log.warning("Batch failed: %s", error)
+            failed.extend(batch)
+        else:
+            results.extend(batch_results)
+        checked += len(batch)
+        if on_batch:
+            on_batch(batch, batch_results, error, checked)
+        if index < len(batch_list):
+            time.sleep(float(config["delay_between_batches_seconds"]))
+    return results, failed
 
 
 def checkpoint_path(config: dict[str, Any], root: Path) -> Path:
@@ -415,20 +470,30 @@ def write_excel(path: Path, rows: list[dict[str, Any]]) -> None:
     workbook.save(path)
 
 
+def has_limits(config: dict[str, Any]) -> bool:
+    budget = config.get("budget") or {}
+    return budget.get("max_yearly_price") is not None or budget.get("max_renewal_price") is not None
+
+
 def meets_budget(record: dict[str, Any], config: dict[str, Any]) -> bool:
-    """A record qualifies only with a known API price in the required currency under the caps."""
+    """True when the record is under every cap that is set. With no caps set, every record passes.
+
+    The first-year cap needs a known price in the required currency. The renewal cap is checked
+    only when a renewal price is known, unless require_renewal_price is set.
+    """
     budget = config.get("budget") or {}
     max_price = budget.get("max_yearly_price")
     max_renewal = budget.get("max_renewal_price")
     if max_price is None and max_renewal is None:
         return True
-    price = record.get("price")
-    currency = record.get("currency")
-    required_currency = str(budget.get("currency", "")).upper()
-    if not isinstance(price, (int, float)) or not currency or str(currency).upper() != required_currency:
-        return False
-    if max_price is not None and price > float(max_price):
-        return False
+    if max_price is not None:
+        price = record.get("price")
+        currency = record.get("currency")
+        required_currency = str(budget.get("currency", "")).upper()
+        if not isinstance(price, (int, float)) or not currency or str(currency).upper() != required_currency:
+            return False
+        if price > float(max_price):
+            return False
     if max_renewal is not None:
         renewal_price = record.get("renewal_price")
         if isinstance(renewal_price, (int, float)):
@@ -674,32 +739,31 @@ def main() -> int:
 
     candidates = pending_domains(valid, processed)
     logger.info("RDAP pre-check for %s domains", len(candidates))
-    for domain in candidates:
-        if rdap_is_registered(domain, config) is True:
+    for domain, registered in rdap_statuses(candidates, config).items():
+        if registered is True:
             logger.info("Taken (RDAP): %s", domain)
             processed[domain] = record_for_output(CheckResult(domain=domain, available=False, status=RDAP_REGISTERED, checked_at=utc_now()))
     results = results_from_processed(processed)
     save_progress()
 
-    batch_list = list(batches(pending_domains(valid, processed), config["batch_size"]))
-    logger.info("Pending: %s domains in %s batches", sum(len(batch) for batch in batch_list), len(batch_list))
+    pending = pending_domains(valid, processed)
+    logger.info("Pending: %s domains in %s batches", len(pending), -(-len(pending) // config["batch_size"]))
+
+    def on_batch(batch: list[str], batch_results: list[CheckResult], error: str | None, _checked: int) -> None:
+        nonlocal errors, results, requests_made
+        requests_made += 1
+        if error:
+            errors = record_errors(errors, batch, error)
+        else:
+            for result in batch_results:
+                processed[result.domain] = record_for_output(result) | {"api_success": True}
+                logger.info("%s: %s", "Available" if result.available else "Taken", result.domain)
+            errors = drop_resolved_errors(errors, processed)
+            results = results_from_processed(processed)
+        save_progress()
+
     try:
-        for batch_number, batch in enumerate(batch_list, 1):
-            logger.info("Processing batch %s of %s | %s domains", batch_number, len(batch_list), len(batch))
-            batch_results, error = check_batch(batch, config, pat, logger)
-            requests_made += 1
-            if error:
-                logger.error("Batch failed: %s", error)
-                errors = record_errors(errors, batch, error)
-            else:
-                for result in batch_results:
-                    processed[result.domain] = record_for_output(result) | {"api_success": True}
-                    logger.info("%s: %s", "Available" if result.available else "Taken", result.domain)
-                errors = drop_resolved_errors(errors, processed)
-                results = results_from_processed(processed)
-            save_progress()
-            if batch_number < len(batch_list):
-                time.sleep(float(config["delay_between_batches_seconds"]))
+        check_in_batches(pending, config, pat, check_batch, logger, on_batch)
     except AuthError as exc:
         logger.error("Run stopped: %s", exc)
         save_progress()
