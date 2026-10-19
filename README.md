@@ -1,62 +1,70 @@
 # DomainChecker
 
-It will get used to check domain is available or not.
+Find domain names that are available to register, from a keyword.
 
-# GoDaddy Domain Availability Checker
+Enter a keyword such as `automation` or `real estate`, pick the extensions (`.com`, `.in`, `.ai`, `.co`), and set a maximum price. The app builds readable names that contain your keyword, checks them with GoDaddy, and lists the ones that are available.
 
-This Windows-friendly Python 3.10+ application reads domains from JSON and checks them through the official GoDaddy Domains API. It never purchases domains. A domain is classified as available only when GoDaddy returns the boolean value `available: true`.
+Nothing is purchased. A domain counts as available only when GoDaddy returns `available: true`.
 
 ## Setup
 
 ```powershell
-python --version
+python --version            # 3.10 or newer
 python -m venv .venv
 .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 Copy-Item .env.example .env
 ```
 
-Create a GoDaddy Personal Access Token with permission to check domains, then put it in `.env` as `GODADDY_PAT=...`. The token is never written to outputs or logs. Do not commit `.env`.
+Put your GoDaddy Personal Access Token in `.env` as `GODADDY_PAT=...`, or set it as an environment variable. The token is never written to files or logs. Do not commit `.env`.
 
-Credential precedence is CLI `--pat`, environment variable `GODADDY_PAT`, `.env`, `GODADDY_PAT.json`, then the optional `godaddy_pat` config value. Put a token in the ignored `GODADDY_PAT.json` file using `{ "GODADDY_PAT": "your_real_token" }` if you want the project to preserve it locally. Never commit `GODADDY_PAT.json` or `.env`. `GODADDY_API_URL` can override the endpoint for controlled environments.
-
-The default input is `domains.json`. It can be an array or `{"domains": [...]}`. Edit `config.json` for batching, retry, output, TLD, and price settings.
-
-## Generate Candidate Domains
-
-Edit `domain_generation_config.json` to control the business-oriented candidate pool. Set `industry` to a key in `industry_profiles` to change the keyword weighting used by the generator. You can also edit or add profiles, or omit the selector and use the legacy `industry_keywords` list. The generator creates review-only names and does not claim availability.
-
-The premium candidate gate requires a score of at least 18 from the phonetic, spelling, uniqueness, brand, industry, and legal filters. The strict purchase filter is `INR 5,000` for first-year registration and `INR 6,000` for renewal. A domain must be confirmed available by GoDaddy, include a returned price, use INR, and meet the configured budget. Renewal price is preserved when the API supplies it; it can be made mandatory with `budget.require_renewal_price`.
+## Use the web app
 
 ```powershell
-python generate_domains.py
+python run_server.py
 ```
 
-This writes the configured output file, normally `domains.json`. To keep the current list and create a separate review file:
+Open http://127.0.0.1:8000. The server listens on this computer only, and the app has no login.
+
+For each search the app:
+
+1. Builds names from your keyword. Every name contains a word from it, and the exact keyword comes first.
+2. Adds industry words when the keyword matches a known industry (real estate, proptech, technology, finance).
+3. Combines each name with the extensions you picked.
+4. Skips names the free RDAP registry reports as registered.
+5. Checks the rest with GoDaddy in batches of 25.
+6. Lists the available names, in-budget ones first, with the first-year and renewal price.
+
+Results are kept in `output/jobs.sqlite3`, so a finished search is still there after a restart.
+
+## Command line
 
 ```powershell
-python generate_domains.py --output generated_review_domains.json
+python generate_domains.py --keywords "automation"    # writes candidate names, no API request
+python godaddy_checker.py --input domains.json          # checks a list of domains with GoDaddy
+python godaddy_checker.py --dry-run                     # validates the list only
+python godaddy_checker.py --test                        # one real API call; prints the raw item
+python godaddy_checker.py --force-recheck               # ignores the saved checkpoint
 ```
 
-Review the generated file first. Only after approval should you run `python godaddy_checker.py --force-recheck` to check availability through GoDaddy.
+Results from the checker are written to `output/`. They include `BUY_NOW.txt`, a list of available domains within the price limit.
 
-## Commands
+## Settings
+
+All settings are in `settings.py`: extensions, price default, batch size, retries, word lists, industry vocabulary, and blocked terms. There are no configuration files to edit. The only values users change are the keyword, the extensions and the price.
+
+## Before you rely on the results
+
+- **Price units are not yet confirmed.** Run `python godaddy_checker.py --test` with a real token and check the printed price against the GoDaddy site. `--test` exits with an error if a price looks like micro-units.
+- **Trademarks are not checked.** A name can be available and still be someone's trademark. Check before you use one.
+- **Availability and prices change.** GoDaddy's results are for search. Confirm availability and price at checkout.
+- **Renewal prices are shown, not filtered.** The price limit applies to the first year only.
+
+## Tests
 
 ```powershell
-python godaddy_checker.py --dry-run
-python godaddy_checker.py
-python godaddy_checker.py --test
-python godaddy_checker.py --input domains.json --batch-size 25
-python godaddy_checker.py --force-recheck
-python godaddy_checker.py --no-resume
+pip install -r requirements-dev.txt
+python -m pytest
 ```
 
-Dry run performs no network request. Test mode checks one valid domain through the API. Normal runs save a checkpoint after each successful batch, so interrupted work can resume. The API limit is enforced locally at 25 domains per request even if a larger value is configured.
-
-## Outputs
-
-Results are written under `output/`: available, taken, invalid, error, unchecked, CSV/JSON, `domain_results.md`, `available_domains.md`, `budget_available_domains.md`, `BUY_NOW.txt`, `summary.json`, and `checker.log`. Reports preserve price, renewal price, currency, premium, definitive, and status fields when GoDaddy supplies them. `available_domains.md` contains all API-confirmed available domains. `budget_available_domains.md` and `BUY_NOW.txt` contain only API-confirmed available domains with a known API price in the required currency and at or below the configured budget. Missing prices and currency mismatches are excluded. Prices are indicative API prices and must be verified at checkout. Excel output is disabled by default and can be re-enabled with `save_excel`.
-
-Authentication failures stop clearly; temporary network failures, HTTP 408/429/5xx responses, and timeouts retry with exponential backoff. A failed batch is never marked as successfully processed. Malformed or incomplete API responses are treated as errors, never as availability.
-
-GoDaddy availability can change between this check and registration. Always re-check the final price and availability at checkout.
+The tests run offline. They replace the GoDaddy and RDAP calls with fakes.

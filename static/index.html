@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Domain Search</title>
+  <style>
+    :root { color-scheme: light dark; --bg: #f6f7f9; --card: #ffffff; --text: #1d2330; --muted: #5b6474; --line: #d9dde5; --accent: #1f6feb; --ok: #1a7f37; --warn: #9a6700; }
+    @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg: #0f1218; --card: #171c26; --text: #e6e9ef; --muted: #9aa3b2; --line: #2a3140; --accent: #4c9aff; --ok: #3fb950; --warn: #d29922; } }
+    :root[data-theme="dark"] { --bg: #0f1218; --card: #171c26; --text: #e6e9ef; --muted: #9aa3b2; --line: #2a3140; --accent: #4c9aff; --ok: #3fb950; --warn: #d29922; }
+    body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, sans-serif; }
+    main { max-width: 900px; margin: 0 auto; padding: 24px 16px; }
+    h1 { font-size: 1.5rem; margin: 0 0 4px; }
+    p.lead { margin: 0 0 20px; color: var(--muted); }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+    form { display: grid; gap: 12px; grid-template-columns: 1fr; }
+    @media (min-width: 640px) { form { grid-template-columns: 2fr 1fr; } .wide { grid-column: 1 / -1; } }
+    label { display: grid; gap: 4px; font-size: 0.9rem; color: var(--muted); }
+    input[type="text"], input[type="number"] { font: inherit; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); min-width: 0; }
+    .tlds { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; border: 0; padding: 0; margin: 0; }
+    .tlds label { display: inline-flex; gap: 6px; color: var(--text); }
+    details summary { cursor: pointer; color: var(--muted); }
+    details .options { display: grid; gap: 12px; grid-template-columns: 1fr; margin-top: 12px; }
+    @media (min-width: 640px) { details .options { grid-template-columns: 1fr 1fr; } }
+    .actions { display: flex; gap: 10px; flex-wrap: wrap; }
+    button { font: inherit; padding: 9px 16px; border: 0; border-radius: 6px; background: var(--accent); color: #fff; cursor: pointer; justify-self: start; }
+    button.secondary { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
+    button:disabled { opacity: 0.6; cursor: default; }
+    .status { color: var(--muted); min-height: 1.5em; margin-top: 12px; }
+    .error { color: var(--warn); }
+    .hidden { display: none; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+    th { font-size: 0.8rem; color: var(--muted); font-weight: 600; }
+    .tag { font-size: 0.8rem; padding: 2px 8px; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; }
+    .in { color: var(--ok); } .out { color: var(--muted); } .warn { color: var(--warn); }
+    .note { font-size: 0.85rem; color: var(--muted); margin: 12px 0 0; }
+    .notice { font-size: 0.9rem; color: var(--warn); margin: 12px 0 0; }
+    @media (max-width: 520px) { th:nth-child(3), td:nth-child(3) { display: none; } }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Domain Search</h1>
+  <p class="lead">Enter a keyword, pick extensions, and see which names are available.</p>
+
+  <section class="card">
+    <form id="search-form">
+      <label class="wide">Keyword
+        <input type="text" id="keyword" name="keyword" placeholder="e.g. automation, tag, real estate" required minlength="2" maxlength="60" autofocus>
+      </label>
+      <fieldset class="wide tlds" id="tlds" aria-label="Extensions"></fieldset>
+      <label>Max price (first year, INR)
+        <input type="number" id="max_price" min="0" step="any" placeholder="no limit">
+      </label>
+      <details class="wide">
+        <summary>More options</summary>
+        <div class="options">
+          <label>Max renewal price (INR)
+            <input type="number" id="max_renewal_price" min="0" step="any" placeholder="no limit">
+          </label>
+        </div>
+      </details>
+      <div class="wide actions"><button type="submit" id="submit">Search</button></div>
+    </form>
+    <div class="status" id="status" role="status" aria-live="polite"></div>
+  </section>
+
+  <section class="card hidden" id="results-card">
+    <table>
+      <thead><tr><th>Domain</th><th>Price</th><th>Renewal</th><th>Budget</th><th>Trademark</th></tr></thead>
+      <tbody id="results"></tbody>
+    </table>
+    <p class="notice hidden" id="failed-notice"></p>
+    <p class="note" id="footnote"></p>
+    <div class="actions" style="margin-top:12px">
+      <button type="button" class="secondary hidden" id="run-again">Run again</button>
+    </div>
+  </section>
+</main>
+
+<script>
+  const form = document.getElementById("search-form");
+  const statusEl = document.getElementById("status");
+  const submit = document.getElementById("submit");
+  const resultsCard = document.getElementById("results-card");
+  const resultsBody = document.getElementById("results");
+  const footnote = document.getElementById("footnote");
+  const failedNotice = document.getElementById("failed-notice");
+  const runAgain = document.getElementById("run-again");
+  let pollTimer = null;
+  let lastRequest = null;
+
+  function setStatus(text, isError = false) {
+    statusEl.textContent = text;
+    statusEl.classList.toggle("error", isError);
+  }
+
+  function money(value, code) {
+    if (value === null || value === undefined) return "-";
+    return `${Number(value).toLocaleString()} ${code || ""}`.trim();
+  }
+
+  function cell(text, className) {
+    const td = document.createElement("td");
+    td.textContent = text;
+    if (className) td.className = className;
+    return td;
+  }
+
+  function tagCell(text, className) {
+    const tag = document.createElement("span");
+    tag.className = `tag ${className}`;
+    tag.textContent = text;
+    const td = document.createElement("td");
+    td.append(tag);
+    return td;
+  }
+
+  function renderResults(job) {
+    resultsBody.replaceChildren();
+    for (const offer of job.offers) {
+      const row = document.createElement("tr");
+      row.append(cell(offer.domain));
+      row.append(cell(money(offer.price, offer.currency)));
+      row.append(cell(money(offer.renewal_price, offer.currency)));
+      row.append(tagCell(offer.within_budget ? "within budget" : "over budget", offer.within_budget ? "in" : "out"));
+      row.append(offer.trademark === "CLEAR"
+        ? tagCell("no match", "in")
+        : tagCell("not checked", "warn"));
+      resultsBody.append(row);
+    }
+    resultsCard.classList.remove("hidden");
+    const inBudget = job.offers.filter(o => o.within_budget).length;
+    const parts = [`${job.offers.length} available, ${inBudget} within budget`];
+    if (job.skipped_registered) parts.push(`${job.skipped_registered} skipped as already registered`);
+    parts.push("Prices are indicative API prices. Re-check availability and price at checkout.");
+    footnote.textContent = parts.join(" · ");
+
+    if (job.failed && job.failed.length) {
+      failedNotice.textContent = `${job.failed.length} names could not be checked because GoDaddy did not answer. Run again to retry them.`;
+      failedNotice.classList.remove("hidden");
+    } else {
+      failedNotice.classList.add("hidden");
+    }
+    if (job.trademark_checked === false) {
+      footnote.textContent += " · Trademarks have not been checked for these names.";
+    }
+  }
+
+  function progressText(job) {
+    if (job.status === "queued") return "Starting…";
+    const detail = job.total ? ` (${job.checked} of ${job.total})` : "";
+    return `${job.stage || "Working"}${detail}…`;
+  }
+
+  function showRunAgain(visible) {
+    runAgain.classList.toggle("hidden", !visible);
+  }
+
+  async function poll(jobId) {
+    try {
+      const response = await fetch(`/api/searches/${jobId}`);
+      if (!response.ok) throw new Error("Lost track of the search");
+      const job = await response.json();
+      if (job.status === "done") {
+        clearInterval(pollTimer);
+        setStatus(`Done. ${job.offers.length} available domains found.`);
+        renderResults(job);
+        showRunAgain(true);
+        submit.disabled = false;
+      } else if (job.status === "failed") {
+        clearInterval(pollTimer);
+        setStatus(job.error || "The search failed.", true);
+        showRunAgain(true);
+        submit.disabled = false;
+      } else {
+        setStatus(progressText(job));
+      }
+    } catch (error) {
+      clearInterval(pollTimer);
+      setStatus(error.message, true);
+      showRunAgain(true);
+      submit.disabled = false;
+    }
+  }
+
+  function selectedTlds() {
+    return [...document.querySelectorAll("#tlds input:checked")].map(input => input.value);
+  }
+
+  function optionalNumber(id) {
+    const raw = document.getElementById(id).value.trim();
+    return raw === "" ? null : Number(raw);
+  }
+
+  async function startSearch(body) {
+    lastRequest = body;
+    submit.disabled = true;
+    showRunAgain(false);
+    resultsCard.classList.add("hidden");
+    setStatus("Starting…");
+    try {
+      const response = await fetch("/api/searches", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!response.ok) {
+        const problem = await response.json().catch(() => ({}));
+        const detail = typeof problem.detail === "string" ? problem.detail : "Check the form and try again.";
+        throw new Error(detail);
+      }
+      const { id } = await response.json();
+      clearInterval(pollTimer);
+      pollTimer = setInterval(() => poll(id), 1500);
+      poll(id);
+    } catch (error) {
+      setStatus(error.message, true);
+      showRunAgain(true);
+      submit.disabled = false;
+    }
+  }
+
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const tlds = selectedTlds();
+    if (tlds.length === 0) {
+      setStatus("Pick at least one extension.", true);
+      return;
+    }
+    startSearch({
+      keyword: document.getElementById("keyword").value.trim(),
+      tlds,
+      max_price: optionalNumber("max_price"),
+      max_renewal_price: optionalNumber("max_renewal_price"),
+    });
+  });
+
+  runAgain.addEventListener("click", () => {
+    if (lastRequest) startSearch(lastRequest);
+  });
+
+  (async function init() {
+    try {
+      const response = await fetch("/api/config");
+      const config = await response.json();
+      const fieldset = document.getElementById("tlds");
+      for (const tld of config.tlds) {
+        const label = document.createElement("label");
+        const input = document.createElement("input");
+        input.type = "checkbox";
+        input.value = tld;
+        input.checked = config.default_tlds.includes(tld);
+        label.append(input, ` ${tld}`);
+        fieldset.append(label);
+      }
+      document.getElementById("max_price").placeholder = `e.g. ${config.default_max_price}`;
+    } catch (error) {
+      setStatus("Could not load settings from the server.", true);
+    }
+  })();
+</script>
+</body>
+</html>
