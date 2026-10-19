@@ -1,4 +1,5 @@
 import logging
+import os
 
 import pytest
 import requests
@@ -183,3 +184,80 @@ def test_micro_unit_prices_are_flagged():
 def test_whole_currency_prices_are_not_flagged():
     assert gc.price_units_warning({"price": 1000}) is None
     assert gc.price_units_warning({"price": None}) is None
+
+
+# --- token from .env (review item 1) ----------------------------------------
+
+def test_load_pat_reads_the_dotenv_file(monkeypatch, tmp_path):
+    monkeypatch.setattr(os, "environ", {k: v for k, v in os.environ.items() if k != "GODADDY_PAT"})
+    monkeypatch.setattr(settings, "ROOT", tmp_path)
+    (tmp_path / ".env").write_text("GODADDY_PAT=token-from-dotenv\n", encoding="utf-8")
+    assert gc.load_pat() == "token-from-dotenv"
+
+
+def test_environment_variable_takes_precedence_over_dotenv(monkeypatch, tmp_path):
+    monkeypatch.setattr(os, "environ", {**os.environ, "GODADDY_PAT": "token-from-env"})
+    monkeypatch.setattr(settings, "ROOT", tmp_path)
+    (tmp_path / ".env").write_text("GODADDY_PAT=token-from-dotenv\n", encoding="utf-8")
+    assert gc.load_pat() == "token-from-env"
+
+
+# --- budget rules (review item 4) -------------------------------------------
+
+def test_renewal_only_cap_passes_a_known_renewal_under_the_cap():
+    config = {"budget": {"max_yearly_price": None, "max_renewal_price": 800, "currency": "INR"}}
+    assert gc.meets_budget({"price": None, "currency": None, "renewal_price": 700}, config) is True
+
+
+def test_renewal_only_cap_fails_a_known_renewal_over_the_cap():
+    config = {"budget": {"max_yearly_price": None, "max_renewal_price": 800, "currency": "INR"}}
+    assert gc.meets_budget({"price": None, "currency": None, "renewal_price": 900}, config) is False
+
+
+def test_price_cap_does_not_need_a_renewal_price_unless_required():
+    config = {"budget": {"max_yearly_price": 1000, "max_renewal_price": 800, "currency": "INR", "require_renewal_price": False}}
+    assert gc.meets_budget({"price": 500, "currency": "INR", "renewal_price": None}, config) is True
+
+
+def test_has_limits_is_false_with_no_caps():
+    assert gc.has_limits({"budget": {"max_yearly_price": None, "max_renewal_price": None}}) is False
+    assert gc.has_limits({"budget": {"max_yearly_price": 500, "max_renewal_price": None}}) is True
+
+
+# --- shared batch loop and parallel RDAP (review items 2 and 3) -----------------
+
+def test_check_in_batches_collects_results_and_failed_batches():
+    config = {**gc.default_config(), "batch_size": 2}
+    seen = []
+
+    def fake(batch, config, pat, logger):
+        if batch[0] == "bad1.com":
+            return [], "GoDaddy returned HTTP 500"
+        return [gc.CheckResult(domain=d, available=True) for d in batch], None
+
+    results, failed = gc.check_in_batches(["ok1.com", "ok2.com", "bad1.com", "bad2.com"], config, "t", fake, logging.getLogger("t"),
+                                          on_batch=lambda batch, res, err, checked: seen.append(checked))
+    assert [r.domain for r in results] == ["ok1.com", "ok2.com"]
+    assert failed == ["bad1.com", "bad2.com"]
+    assert seen == [2, 4]
+
+
+def test_check_in_batches_stops_on_auth_error():
+    config = {**gc.default_config(), "batch_size": 1}
+
+    def rejected(batch, config, pat, logger):
+        raise gc.AuthError("HTTP 401")
+
+    with pytest.raises(gc.AuthError):
+        gc.check_in_batches(["a1.com", "a2.com"], config, "t", rejected, logging.getLogger("t"))
+
+
+def test_rdap_statuses_maps_each_domain_and_treats_errors_as_unknown(monkeypatch):
+    def fake(domain, config):
+        if domain == "boom.com":
+            raise RuntimeError("network down")
+        return domain.startswith("taken")
+
+    monkeypatch.setattr(gc, "rdap_is_registered", fake)
+    status = gc.rdap_statuses(["taken1.com", "free1.com", "boom.com"], gc.default_config())
+    assert status == {"taken1.com": True, "free1.com": False, "boom.com": None}

@@ -124,15 +124,20 @@
       row.append(cell(offer.domain));
       row.append(cell(money(offer.price, offer.currency)));
       row.append(cell(money(offer.renewal_price, offer.currency)));
-      row.append(tagCell(offer.within_budget ? "within budget" : "over budget", offer.within_budget ? "in" : "out"));
+      if (offer.within_budget === null) {
+        row.append(tagCell("no limit set", "out"));
+      } else {
+        row.append(tagCell(offer.within_budget ? "within budget" : "over budget", offer.within_budget ? "in" : "out"));
+      }
       row.append(offer.trademark === "CLEAR"
         ? tagCell("no match", "in")
         : tagCell("not checked", "warn"));
       resultsBody.append(row);
     }
     resultsCard.classList.remove("hidden");
-    const inBudget = job.offers.filter(o => o.within_budget).length;
-    const parts = [`${job.offers.length} available, ${inBudget} within budget`];
+    const limited = job.offers.some(o => o.within_budget !== null);
+    const inBudget = job.offers.filter(o => o.within_budget === true).length;
+    const parts = [limited ? `${job.offers.length} available, ${inBudget} within budget` : `${job.offers.length} available`];
     if (job.skipped_registered) parts.push(`${job.skipped_registered} skipped as already registered`);
     parts.push("Prices are indicative API prices. Re-check availability and price at checkout.");
     footnote.textContent = parts.join(" · ");
