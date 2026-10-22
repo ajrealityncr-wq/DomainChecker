@@ -39,7 +39,7 @@ For each search the app:
 
 Results are kept in `output/app.sqlite3`, so a finished search is still there after a restart.
 
-**Every name is unique.** Each name the app generates is recorded, and a later search or generator run never produces it again. A name is released only when its check failed or the run stopped, so it can be tried later. Each keyword has a finite set of names that pass the brand score (about 100 for a long keyword like "automation", over 1,000 for a short one like "tag"). When they are all used, the search says that no new names are left. Use a different keyword or extension to continue.
+**Every name is unique, and checked only once.** Each name the app generates is recorded in `output/app.sqlite3`, and a later search or generator run never produces it again. When GoDaddy answers for a name, available or taken, the answer is stored with it, and that name is never sent to GoDaddy again: not by a later web search, and not by the command-line checker. The checker reports such names with the reason `CHECKED_EARLIER` and the stored answer. A name is released only when it was generated but never answered (the check failed or the run stopped), so it can be tried later. Each keyword has a finite set of names that pass the brand score (about 100 for a long keyword like "automation", over 1,000 for a short one like "tag"). When they are all used, the search says that no new names are left. Use a different keyword or extension to continue.
 
 ## Command line
 
@@ -48,7 +48,7 @@ python generate_domains.py --keywords "automation"    # writes candidate names, 
 python godaddy_checker.py --input domains.json          # checks a list of domains with GoDaddy
 python godaddy_checker.py --dry-run                     # validates the list only
 python godaddy_checker.py --test                        # one real API call; prints the raw item
-python godaddy_checker.py --force-recheck               # ignores the saved checkpoint
+python godaddy_checker.py --force-recheck               # ignores the run checkpoint; answered names are still not re-sent
 ```
 
 Results from the checker are written to `output/`. They include `BUY_NOW.txt`, a list of available domains within the price limit.

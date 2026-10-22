@@ -239,17 +239,25 @@ def execute(request: SearchRequest, check_fn: CheckFn, progress: Progress,
         remaining_set = set(remaining)
         skipped_registered = len(domains) - len(remaining)
         answered.update(domain for domain in domains if domain not in remaining_set)
+        # Registered names are taken; store that so they are never generated or checked again.
+        history.mark_checked({domain: False for domain in domains if domain not in remaining_set})
 
         budget = budget_config(request)
         known = cache.get_many("godaddy", remaining)
         answered.update(known)
-        to_check = [domain for domain in remaining if domain not in known]
+        history.mark_checked({domain: record.get("available") is True for domain, record in known.items()})
+        # A name GoDaddy already answered is never sent again.
+        previously_checked = history.checked([domain for domain in remaining if domain not in known])
+        answered.update(previously_checked)
+        to_check = [domain for domain in remaining if domain not in known and domain not in previously_checked]
         results = [gc.result_from_record(record) for record in known.values() if record.get("available") in {True, False}]
         already = len(known)
         progress(total=len(remaining), checked=already, skipped_registered=skipped_registered, stage="Checking availability with GoDaddy")
 
         def on_batch(batch: list[str], batch_results: list[gc.CheckResult], error: str | None, checked: int) -> None:
             answered.update(batch)
+            # Store each answer as it arrives, so a stopped run never re-sends what GoDaddy already answered.
+            history.mark_checked({result.domain: result.available is True for result in batch_results})
             progress(checked=already + checked)
 
         fresh, failed = gc.check_in_batches(to_check, config, pat, check_fn, logger, on_batch)

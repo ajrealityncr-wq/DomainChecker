@@ -23,6 +23,7 @@ from typing import Any, Callable, Iterable
 import requests
 
 import settings
+from history import DomainHistory
 
 try:
     from dotenv import load_dotenv
@@ -37,6 +38,7 @@ DOMAIN_RE = re.compile(
 RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
 AUTH_STATUS_CODES = {401, 403}
 RDAP_REGISTERED = "RDAP_REGISTERED"
+PREVIOUSLY_CHECKED = "PREVIOUSLY_CHECKED"
 logger = logging.getLogger("godaddy_checker")
 RECORD_FIELDS = {"domain", "available", "price", "renewal_price", "currency", "premium", "definitive", "status", "restrictions", "checked_at", "error", "api_success"}
 CSV_FIELDS = ["domain", "available", "price", "renewal_price", "currency", "premium", "definitive", "status", "checked_at"]
@@ -507,6 +509,8 @@ def meets_budget(record: dict[str, Any], config: dict[str, Any]) -> bool:
 def status_for(result: CheckResult | None, error: dict[str, Any] | None) -> tuple[str, str]:
     if result and result.status == RDAP_REGISTERED:
         return "TAKEN", RDAP_REGISTERED
+    if result and result.status == PREVIOUSLY_CHECKED:
+        return ("AVAILABLE" if result.available else "TAKEN"), "CHECKED_EARLIER"
     if result and result.available is True:
         return "AVAILABLE", "GODADDY_CONFIRMED_AVAILABLE"
     if result and result.available is False:
@@ -652,7 +656,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--input", help=f"JSON list of domains (default: {settings.INPUT_FILE})")
     parser.add_argument("--dry-run", action="store_true", help="Validate the list only; no network request")
     parser.add_argument("--test", action="store_true", help="Check one domain and print the raw API item")
-    parser.add_argument("--force-recheck", action="store_true", help="Ignore the saved checkpoint")
+    parser.add_argument("--force-recheck", action="store_true",
+                        help="Ignore this run's saved checkpoint (names GoDaddy already answered are still not re-sent)")
     return parser
 
 
@@ -737,12 +742,23 @@ def main() -> int:
             started_at, requests_made, normalization_log,
         )
 
+    history = DomainHistory()
+    # Names answered in any earlier run or web search are never sent to GoDaddy again.
+    earlier = history.checked(pending_domains(valid, processed))
+    for domain, available in earlier.items():
+        processed[domain] = record_for_output(CheckResult(domain=domain, available=available, status=PREVIOUSLY_CHECKED))
+    if earlier:
+        logger.info("Skipping %s domains already checked earlier", len(earlier))
+
     candidates = pending_domains(valid, processed)
     logger.info("RDAP pre-check for %s domains", len(candidates))
+    registered_now = {}
     for domain, registered in rdap_statuses(candidates, config).items():
         if registered is True:
             logger.info("Taken (RDAP): %s", domain)
             processed[domain] = record_for_output(CheckResult(domain=domain, available=False, status=RDAP_REGISTERED, checked_at=utc_now()))
+            registered_now[domain] = False
+    history.mark_checked(registered_now)
     results = results_from_processed(processed)
     save_progress()
 
@@ -758,6 +774,7 @@ def main() -> int:
             for result in batch_results:
                 processed[result.domain] = record_for_output(result) | {"api_success": True}
                 logger.info("%s: %s", "Available" if result.available else "Taken", result.domain)
+            history.mark_checked({result.domain: result.available is True for result in batch_results})
             errors = drop_resolved_errors(errors, processed)
             results = results_from_processed(processed)
         save_progress()
