@@ -98,6 +98,14 @@ def create_app(check_fn: ss.CheckFn = gc.check_batch, store: ss.JobStore | None 
             raise HTTPException(status_code=429, detail=str(exc)) from exc
         return {"id": job_id}
 
+    @app.get("/api/searches")
+    def list_searches() -> dict[str, object]:
+        return {"searches": job_store().list_jobs()}
+
+    @app.get("/api/domains")
+    def list_domains() -> dict[str, object]:
+        return {"domains": ss.domain_library(), "currency": settings.CURRENCY}
+
     @app.get("/api/searches/{job_id}")
     def get_search(job_id: str) -> dict[str, object]:
         job = job_store().get(job_id)

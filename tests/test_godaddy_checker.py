@@ -261,3 +261,10 @@ def test_rdap_statuses_maps_each_domain_and_treats_errors_as_unknown(monkeypatch
     monkeypatch.setattr(gc, "rdap_is_registered", fake)
     status = gc.rdap_statuses(["taken1.com", "free1.com", "boom.com"], gc.default_config())
     assert status == {"taken1.com": True, "free1.com": False, "boom.com": None}
+
+
+def test_answer_for_keeps_prices_only_for_available_names():
+    available = gc.CheckResult(domain="a.com", available=True, price=0, renewal_price=999, currency="INR", api_success=True)
+    taken = gc.CheckResult(domain="b.com", available=False, price=1200, renewal_price=999, currency="INR", api_success=True)
+    assert gc.answer_for(available) == {"available": True, "price": 0, "renewal_price": 999, "currency": "INR"}
+    assert gc.answer_for(taken) == {"available": False}

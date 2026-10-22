@@ -65,8 +65,8 @@ SUFFIXES = (
     "team", "central", "genius", "expert", "lab", "stream", "scout", "rocket", "pal",
 )
 
-# Plural endings: automation -> automations. Other endings read badly ("automationer").
-INFLECTIONS = ("s", "ers")
+# Plural ending: automation -> automations. "-er" and "-ers" read badly ("automationers").
+INFLECTIONS = ("s",)
 
 # Industry vocabulary is used only when a keyword matches one of these profiles.
 # Stems are three letters so that they can match inside a name.
@@ -86,6 +86,14 @@ INDUSTRY_VOCABULARY = {
     "technology": ("byte", "data", "code", "grid", "logic", "node", "stack", "cloud", "labs"),
     "finance": ("fund", "capital", "cash", "vault", "credit", "loan", "wealth", "gain"),
 }
+
+# ---- Brand quality --------------------------------------------------------
+# Names scoring below this (0-100, see brand.py) are not shown.
+MIN_BRAND_SCORE = 60
+# Generic words that make a name feel less like a brand.
+BRAND_FILLER_WORDS = ("central", "world", "online", "expert", "genius", "direct", "plus")
+# Short endings that only read well alone at the end of a name, never stacked with another suffix.
+END_ONLY_SUFFIXES = ("hq", "io", "ly", "ify", "app")
 
 # ---- Name screening -------------------------------------------------------
 # A name is excluded when it equals a BLOCKED_EXACT word, or contains a BLOCKED_SUBSTRINGS entry.

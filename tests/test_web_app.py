@@ -46,6 +46,9 @@ def test_index_serves_the_page(client):
     assert 'id="keyword"' in response.text
     assert 'id="max_renewal_price"' in response.text
     assert "Run again" in response.text
+    assert 'id="tab-history"' in response.text
+    assert 'id="tab-domains"' in response.text
+    assert "Free only" in response.text
 
 
 def test_config_lists_extensions_and_defaults(client):
@@ -95,6 +98,9 @@ def test_full_search_round_trip(client):
     assert job["offers"]
     assert all(offer["within_budget"] for offer in job["offers"])
     assert job["max_renewal_price"] == 800
+    assert all("brand_score" in offer and "brand_notes" in offer for offer in job["offers"])
+    scores = [offer["brand_score"] for offer in job["offers"]]
+    assert scores == sorted(scores, reverse=True)  # all within budget, so strongest brand first
     assert {offer["domain"].rsplit(".", 1)[1] for offer in job["offers"]} <= {"com", "in"}
 
 
@@ -106,3 +112,42 @@ def test_daily_limit_returns_429(client, monkeypatch):
     monkeypatch.setattr(settings, "MAX_SEARCHES_PER_DAY", 0)
     response = client.post("/api/searches", json={"keyword": "real estate", "tlds": [".com"]})
     assert response.status_code == 429
+
+
+def test_history_lists_every_search_including_repeats(client):
+    first = client.post("/api/searches", json={"keyword": "real estate", "tlds": [".com"], "max_price": 1000}).json()["id"]
+    wait_for_job(client, first)
+    second = client.post("/api/searches", json={"keyword": "real estate", "tlds": [".com"], "max_price": 1000}).json()["id"]
+    wait_for_job(client, second)
+
+    searches = client.get("/api/searches").json()["searches"]
+    assert [s["id"] for s in searches] == [second, first]
+    summary = searches[1]
+    assert summary["keyword"] == "real estate"
+    assert summary["tlds"] == [".com"]
+    assert summary["status"] == "done"
+    assert summary["available"] > 0
+    assert summary["within_budget"] == summary["available"]
+    assert summary["cheapest"] == 800
+    assert "offers" not in summary
+
+
+def test_domains_lists_every_checked_domain_with_prices(client):
+    job_id = client.post("/api/searches", json={"keyword": "real estate", "tlds": [".com"]}).json()["id"]
+    job = wait_for_job(client, job_id)
+
+    body = client.get("/api/domains").json()
+    assert body["currency"] == settings.CURRENCY
+    domains = {row["domain"]: row for row in body["domains"]}
+    assert all(offer["domain"] in domains for offer in job["offers"])
+    offer = job["offers"][0]
+    row = domains[offer["domain"]]
+    assert row["available"] is True
+    assert row["price"] == 800
+    assert row["renewal_price"] == 700
+    assert row["currency"] == "INR"
+    assert row["keyword"] == "real estate"
+    assert row["tld"] == ".com"
+    assert row["brand_score"] == offer["brand_score"]
+    taken = [row for row in body["domains"] if not row["available"]]
+    assert all(row["price"] is None for row in taken)

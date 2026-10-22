@@ -33,11 +33,21 @@ For each search the app:
 3. Combines each name with the extensions you picked.
 4. Skips names the free RDAP registry reports as registered.
 5. Checks the rest with GoDaddy in batches of 25.
-6. Lists the available names, in-budget ones first, with the first-year and renewal price.
+6. Lists the available names, in-budget ones first and the strongest brand names next, with the first-year and renewal price.
+
+**Brand score.** Every name gets a score from 0 to 100 for how well it works as a brand, with the reasons shown next to it. Names lose points for being long, for sounds that are hard to say (such as four consonants in a row), for many syllables, for stacked add-ons (`automationplusnow`), and for filler words such as "world" or "online". Names below 60 are not shown. Short keywords keep thousands of names; long keywords such as "automation" keep about 100, because most longer combinations score too low.
 
 Results are kept in `output/app.sqlite3`, so a finished search is still there after a restart.
 
-**Every name is unique.** Each name the app generates is recorded, and a later search or generator run never produces it again. A name is released only when its check failed or the run stopped, so it can be tried later. Each keyword has a finite set of names (about 1,700 to 2,800 for a typical keyword, built from prefixes, suffixes, plurals and combinations). When they are all used, the search says that no new names are left. Use a different keyword or extension to continue.
+**Reviewing results.** The page has three tabs:
+
+- **Search** runs a search and shows its available domains.
+- **History** lists every search you have run, repeats included, with how many names were available, how many were within budget, and the cheapest price. Open a past search to see its domains again.
+- **All domains** lists every domain the app has checked, available or taken, with the keyword it came from, the first-year and renewal price, the brand score, and when it was checked.
+
+Every results table has the same filters: price (any, free only, or under an amount), extension, minimum brand score, a name search, and sort order (cheapest, best brand, name, or newest). **All domains** can also include taken names. **Export CSV** downloads the rows that match the filters.
+
+**Every name is unique, and checked only once.** Each name the app generates is recorded in `output/app.sqlite3`, and a later search or generator run never produces it again. When GoDaddy answers for a name, available or taken, the answer is stored with it, and that name is never sent to GoDaddy again: not by a later web search, and not by the command-line checker. The checker reports such names with the reason `CHECKED_EARLIER` and the stored answer. A name is released only when it was generated but never answered (the check failed or the run stopped), so it can be tried later. Each keyword has a finite set of names that pass the brand score (about 100 for a long keyword like "automation", over 1,000 for a short one like "tag"). When they are all used, the search says that no new names are left. Use a different keyword or extension to continue.
 
 ## Command line
 
@@ -46,7 +56,7 @@ python generate_domains.py --keywords "automation"    # writes candidate names, 
 python godaddy_checker.py --input domains.json          # checks a list of domains with GoDaddy
 python godaddy_checker.py --dry-run                     # validates the list only
 python godaddy_checker.py --test                        # one real API call; prints the raw item
-python godaddy_checker.py --force-recheck               # ignores the saved checkpoint
+python godaddy_checker.py --force-recheck               # ignores the run checkpoint; answered names are still not re-sent
 ```
 
 Results from the checker are written to `output/`. They include `BUY_NOW.txt`, a list of available domains within the price limit.
