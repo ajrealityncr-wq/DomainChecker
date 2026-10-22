@@ -213,7 +213,7 @@ def next_domains(request: SearchRequest, history: DomainHistory) -> tuple[str | 
         if not unseen:
             raise SearchError("No new names are left for this keyword. Try a different keyword or extension.")
         chosen = unseen[: settings.CANDIDATES_PER_SEARCH * len(request.tlds)]
-        history.mark_seen(chosen)
+        history.mark_seen(chosen, keyword=request.keyword.strip())
     return industry, chosen
 
 
@@ -245,7 +245,7 @@ def execute(request: SearchRequest, check_fn: CheckFn, progress: Progress,
         budget = budget_config(request)
         known = cache.get_many("godaddy", remaining)
         answered.update(known)
-        history.mark_checked({domain: record.get("available") is True for domain, record in known.items()})
+        history.mark_checked({domain: {**record, "available": record.get("available") is True} for domain, record in known.items()})
         # A name GoDaddy already answered is never sent again.
         previously_checked = history.checked([domain for domain in remaining if domain not in known])
         answered.update(previously_checked)
@@ -257,7 +257,7 @@ def execute(request: SearchRequest, check_fn: CheckFn, progress: Progress,
         def on_batch(batch: list[str], batch_results: list[gc.CheckResult], error: str | None, checked: int) -> None:
             answered.update(batch)
             # Store each answer as it arrives, so a stopped run never re-sends what GoDaddy already answered.
-            history.mark_checked({result.domain: result.available is True for result in batch_results})
+            history.mark_checked({result.domain: gc.answer_for(result) for result in batch_results})
             progress(checked=already + checked)
 
         fresh, failed = gc.check_in_batches(to_check, config, pat, check_fn, logger, on_batch)
@@ -364,6 +364,31 @@ class JobStore:
         with self._lock:
             return self._load(job_id)
 
+    def list_jobs(self, limit: int = 200) -> list[dict[str, Any]]:
+        """Past searches, newest first, without their offers (summaries for the history page)."""
+        db = self._connect()
+        try:
+            rows = db.execute("SELECT body FROM jobs ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
+        finally:
+            db.close()
+        summaries = []
+        for (body,) in rows:
+            job = json.loads(body)
+            offers = job.get("offers", [])
+            summaries.append({
+                "id": job["id"],
+                "status": job["status"],
+                "keyword": job.get("keyword"),
+                "tlds": job.get("tlds", []),
+                "created_at": job.get("created_at"),
+                "max_price": job.get("max_price"),
+                "available": len(offers),
+                "within_budget": sum(1 for offer in offers if offer.get("within_budget") is True),
+                "cheapest": min((offer["price"] for offer in offers if isinstance(offer.get("price"), (int, float))), default=None),
+                "error": job.get("error"),
+            })
+        return summaries
+
     def active_count(self) -> int:
         db = self._connect()
         try:
@@ -377,6 +402,17 @@ class JobStore:
             return db.execute("SELECT COUNT(*) FROM jobs WHERE created_at >= ?", (since,)).fetchone()[0]
         finally:
             db.close()
+
+
+def domain_library(history: DomainHistory | None = None) -> list[dict[str, Any]]:
+    """Every domain the app has checked, with its price, extension and brand score."""
+    rows = (history or DomainHistory()).library()
+    for row in rows:
+        name, _, extension = row["domain"].rpartition(".")
+        terms = tokenize_keywords(row["keyword"] or "") or [name]
+        row["brand_score"], row["brand_notes"] = brand.score(name, terms)
+        row["tld"] = "." + extension
+    return rows
 
 
 def run_job(store: JobStore, job_id: str, request: SearchRequest, check_fn: CheckFn,

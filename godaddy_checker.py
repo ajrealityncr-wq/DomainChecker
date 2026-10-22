@@ -375,6 +375,13 @@ def save_checkpoint(path: Path, checkpoint: dict[str, Any]) -> None:
     temporary.replace(path)
 
 
+def answer_for(result: CheckResult) -> dict[str, Any]:
+    """The part of a result that is stored permanently: availability and, for available names, prices."""
+    if result.available is not True:
+        return {"available": False}
+    return {"available": True, "price": result.price, "renewal_price": result.renewal_price, "currency": result.currency}
+
+
 def record_for_output(result: CheckResult) -> dict[str, Any]:
     return {key: value for key, value in asdict(result).items() if key not in {"error", "api_success", "raw"} and value is not None}
 
@@ -774,7 +781,7 @@ def main() -> int:
             for result in batch_results:
                 processed[result.domain] = record_for_output(result) | {"api_success": True}
                 logger.info("%s: %s", "Available" if result.available else "Taken", result.domain)
-            history.mark_checked({result.domain: result.available is True for result in batch_results})
+            history.mark_checked({result.domain: answer_for(result) for result in batch_results})
             errors = drop_resolved_errors(errors, processed)
             results = results_from_processed(processed)
         save_progress()

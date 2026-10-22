@@ -39,6 +39,14 @@ For each search the app:
 
 Results are kept in `output/app.sqlite3`, so a finished search is still there after a restart.
 
+**Reviewing results.** The page has three tabs:
+
+- **Search** runs a search and shows its available domains.
+- **History** lists every search you have run, repeats included, with how many names were available, how many were within budget, and the cheapest price. Open a past search to see its domains again.
+- **All domains** lists every domain the app has checked, available or taken, with the keyword it came from, the first-year and renewal price, the brand score, and when it was checked.
+
+Every results table has the same filters: price (any, free only, or under an amount), extension, minimum brand score, a name search, and sort order (cheapest, best brand, name, or newest). **All domains** can also include taken names. **Export CSV** downloads the rows that match the filters.
+
 **Every name is unique, and checked only once.** Each name the app generates is recorded in `output/app.sqlite3`, and a later search or generator run never produces it again. When GoDaddy answers for a name, available or taken, the answer is stored with it, and that name is never sent to GoDaddy again: not by a later web search, and not by the command-line checker. The checker reports such names with the reason `CHECKED_EARLIER` and the stored answer. A name is released only when it was generated but never answered (the check failed or the run stopped), so it can be tried later. Each keyword has a finite set of names that pass the brand score (about 100 for a long keyword like "automation", over 1,000 for a short one like "tag"). When they are all used, the search says that no new names are left. Use a different keyword or extension to continue.
 
 ## Command line
