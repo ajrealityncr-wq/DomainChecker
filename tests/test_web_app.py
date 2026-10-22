@@ -46,6 +46,7 @@ def test_index_serves_the_page(client):
     assert 'id="keyword"' in response.text
     assert 'id="max_renewal_price"' in response.text
     assert "Run again" in response.text
+    assert "<th>Brand</th>" in response.text
 
 
 def test_config_lists_extensions_and_defaults(client):
@@ -95,6 +96,9 @@ def test_full_search_round_trip(client):
     assert job["offers"]
     assert all(offer["within_budget"] for offer in job["offers"])
     assert job["max_renewal_price"] == 800
+    assert all("brand_score" in offer and "brand_notes" in offer for offer in job["offers"])
+    scores = [offer["brand_score"] for offer in job["offers"]]
+    assert scores == sorted(scores, reverse=True)  # all within budget, so strongest brand first
     assert {offer["domain"].rsplit(".", 1)[1] for offer in job["offers"]} <= {"com", "in"}
 
 

@@ -36,7 +36,9 @@
     .in { color: var(--ok); } .out { color: var(--muted); } .warn { color: var(--warn); }
     .note { font-size: 0.85rem; color: var(--muted); margin: 12px 0 0; }
     .notice { font-size: 0.9rem; color: var(--warn); margin: 12px 0 0; }
-    @media (max-width: 520px) { th:nth-child(3), td:nth-child(3) { display: none; } }
+    @media (max-width: 520px) { th:nth-child(4), td:nth-child(4) { display: none; } }
+    .score { font-weight: 600; }
+    .score-notes { display: block; font-size: 0.75rem; color: var(--muted); }
   </style>
 </head>
 <body>
@@ -68,7 +70,7 @@
 
   <section class="card hidden" id="results-card">
     <table>
-      <thead><tr><th>Domain</th><th>Price</th><th>Renewal</th><th>Budget</th><th>Trademark</th></tr></thead>
+      <thead><tr><th>Domain</th><th>Brand</th><th>Price</th><th>Renewal</th><th>Budget</th><th>Trademark</th></tr></thead>
       <tbody id="results"></tbody>
     </table>
     <p class="notice hidden" id="failed-notice"></p>
@@ -108,6 +110,18 @@
     return td;
   }
 
+  function brandCell(score, notes) {
+    const td = document.createElement("td");
+    const value = document.createElement("span");
+    value.className = "score";
+    value.textContent = `${score}/100`;
+    const detail = document.createElement("span");
+    detail.className = "score-notes";
+    detail.textContent = notes && notes.length ? notes.join(", ") : "short and clear";
+    td.append(value, detail);
+    return td;
+  }
+
   function tagCell(text, className) {
     const tag = document.createElement("span");
     tag.className = `tag ${className}`;
@@ -122,6 +136,7 @@
     for (const offer of job.offers) {
       const row = document.createElement("tr");
       row.append(cell(offer.domain));
+      row.append(brandCell(offer.brand_score, offer.brand_notes));
       row.append(cell(money(offer.price, offer.currency)));
       row.append(cell(money(offer.renewal_price, offer.currency)));
       if (offer.within_budget === null) {

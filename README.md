@@ -33,11 +33,13 @@ For each search the app:
 3. Combines each name with the extensions you picked.
 4. Skips names the free RDAP registry reports as registered.
 5. Checks the rest with GoDaddy in batches of 25.
-6. Lists the available names, in-budget ones first, with the first-year and renewal price.
+6. Lists the available names, in-budget ones first and the strongest brand names next, with the first-year and renewal price.
+
+**Brand score.** Every name gets a score from 0 to 100 for how well it works as a brand, with the reasons shown next to it. Names lose points for being long, for sounds that are hard to say (such as four consonants in a row), for many syllables, for stacked add-ons (`automationplusnow`), and for filler words such as "world" or "online". Names below 60 are not shown. Short keywords keep thousands of names; long keywords such as "automation" keep about 100, because most longer combinations score too low.
 
 Results are kept in `output/app.sqlite3`, so a finished search is still there after a restart.
 
-**Every name is unique.** Each name the app generates is recorded, and a later search or generator run never produces it again. A name is released only when its check failed or the run stopped, so it can be tried later. Each keyword has a finite set of names (about 1,700 to 2,800 for a typical keyword, built from prefixes, suffixes, plurals and combinations). When they are all used, the search says that no new names are left. Use a different keyword or extension to continue.
+**Every name is unique.** Each name the app generates is recorded, and a later search or generator run never produces it again. A name is released only when its check failed or the run stopped, so it can be tried later. Each keyword has a finite set of names that pass the brand score (about 100 for a long keyword like "automation", over 1,000 for a short one like "tag"). When they are all used, the search says that no new names are left. Use a different keyword or extension to continue.
 
 ## Command line
 

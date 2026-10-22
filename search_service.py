@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+import brand
 import godaddy_checker as gc
 import settings
 import trademark
@@ -114,8 +115,6 @@ def word_candidates(keyword: str, industry: str | None, limit: int) -> list[str]
     raw = [joined]
     raw += [joined + suffix for suffix in suffixes]
     raw += [prefix + joined for prefix in prefixes]
-    raw += [term + suffix for term in terms for suffix in suffixes]
-    raw += [prefix + term for term in terms for prefix in prefixes]
     raw += [term + word for term in terms for word in paired]
     raw += [word + term for term in terms for word in paired]
     raw += [word + suffix for word in vocabulary for suffix in suffixes]
@@ -124,7 +123,9 @@ def word_candidates(keyword: str, industry: str | None, limit: int) -> list[str]
     raw += [prefix + joined + suffix for prefix in prefixes for suffix in suffixes]
     # Inflections (automations, automationer, ...) and two suffixes in a row (automationhubpro).
     raw += [joined + ending for ending in settings.INFLECTIONS]
-    raw += [joined + first + second for first in suffixes for second in suffixes if first != second]
+    # Short endings (hq, io, ly, ...) only go last and never in pairs: "automationhqio" reads badly.
+    raw += [joined + first + second for first in suffixes for second in suffixes
+            if first != second and first not in settings.END_ONLY_SUFFIXES and second not in settings.END_ONLY_SUFFIXES]
 
     pattern = re.compile(rf"[a-z]{{{settings.MIN_NAME_LENGTH},{settings.MAX_NAME_LENGTH}}}")
     names: list[str] = []
@@ -140,7 +141,10 @@ def word_candidates(keyword: str, industry: str | None, limit: int) -> list[str]
             continue
         seen.add(name)
         names.append(name)
-    names.sort(key=lambda name: (_rank_tier(name, joined), len(name), name))
+    # Keep names that read like a brand, best first. Ties keep the simpler pattern and the shorter name.
+    scored = {name: brand.score(name, terms)[0] for name in names}
+    names = [name for name in names if scored[name] >= settings.MIN_BRAND_SCORE]
+    names.sort(key=lambda name: (-scored[name], _rank_tier(name, joined), len(name), name))
     return names[:limit]
 
 
@@ -172,8 +176,9 @@ def budget_config(request: SearchRequest) -> dict[str, Any]:
     }
 
 
-def to_offer(result: gc.CheckResult, budget: dict[str, Any]) -> dict[str, Any]:
+def to_offer(result: gc.CheckResult, budget: dict[str, Any], terms: list[str]) -> dict[str, Any]:
     record = {"price": result.price, "currency": result.currency, "renewal_price": result.renewal_price}
+    brand_score, brand_notes = brand.score(result.domain.rsplit(".", 1)[0], terms)
     return {
         "domain": result.domain,
         "price": result.price,
@@ -181,6 +186,8 @@ def to_offer(result: gc.CheckResult, budget: dict[str, Any]) -> dict[str, Any]:
         "currency": result.currency,
         # None when no price limit is set, so the page can say "no limit set" instead of "within budget".
         "within_budget": gc.meets_budget(record, budget) if gc.has_limits(budget) else None,
+        "brand_score": brand_score,
+        "brand_notes": brand_notes,
     }
 
 
@@ -255,10 +262,11 @@ def execute(request: SearchRequest, check_fn: CheckFn, progress: Progress,
     # Names GoDaddy did not answer for can be tried again later.
     history.release(failed)
 
-    offers = [to_offer(result, budget) for result in results if result.available is True]
+    terms = tokenize_keywords(request.keyword)
+    offers = [to_offer(result, budget, terms) for result in results if result.available is True]
     offers = trademark.apply_screen(offers, screen)
-    # Names that break a limit go last. Names with no limit set (within_budget None) sort by price.
-    offers.sort(key=lambda offer: (offer["within_budget"] is False, offer["price"] is None, offer["price"] or 0, offer["domain"]))
+    # Names that break a limit go last; then the strongest brand names, then the cheapest.
+    offers.sort(key=lambda offer: (offer["within_budget"] is False, -offer["brand_score"], offer["price"] is None, offer["price"] or 0, offer["domain"]))
     return {
         "offers": offers,
         "failed": failed,
