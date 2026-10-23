@@ -31,12 +31,17 @@ def test_generator_rejects_bad_keyword(monkeypatch, tmp_path, capsys):
     assert "Input error" in capsys.readouterr().out
 
 
-def test_generator_never_repeats_a_name_across_runs(monkeypatch, tmp_path):
+def test_generator_does_not_use_up_names(monkeypatch, tmp_path):
+    import search_service as ss
+    from history import DomainHistory
     monkeypatch.setattr(settings, "OUTPUT_DIRECTORY", tmp_path)
     monkeypatch.setattr(sys, "argv", ["generate_domains.py", "--keywords", "automation"])
     assert gd.main() == 0
-    first = json.loads((tmp_path / "generated_review_domains.json").read_text(encoding="utf-8"))
+    previewed = json.loads((tmp_path / "generated_review_domains.json").read_text(encoding="utf-8"))
+    # The names are only previewed: the next web search still gets them.
+    _, searched = ss.next_domains(ss.SearchRequest(keyword="automation", tlds=tuple(settings.DEFAULT_TLDS)), DomainHistory())
+    assert searched == previewed
+    # Once a search has used them, the preview moves on to new names.
     assert gd.main() == 0
-    second = json.loads((tmp_path / "generated_review_domains.json").read_text(encoding="utf-8"))
-    assert first and second
-    assert set(first).isdisjoint(second)
+    after = json.loads((tmp_path / "generated_review_domains.json").read_text(encoding="utf-8"))
+    assert set(after).isdisjoint(previewed)

@@ -33,10 +33,10 @@ def main() -> int:
         print(f"Input error: {exc}")
         return 2
 
-    try:
-        industry, domains = ss.next_domains(request, DomainHistory())
-    except ss.SearchError as exc:
-        print(f"Stopped: {exc}")
+    # A preview only: the names are not reserved, so the web search can still check them.
+    industry, domains = ss.preview_domains(request, DomainHistory())
+    if not domains:
+        print("Stopped: No new names are left for this keyword. Try a different keyword or extension.")
         return 1
     output = settings.OUTPUT_DIRECTORY / "generated_review_domains.json"
     output.parent.mkdir(parents=True, exist_ok=True)

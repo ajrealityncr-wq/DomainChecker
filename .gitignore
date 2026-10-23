@@ -5,4 +5,5 @@ __pycache__/
 *.pyc
 checkpoint.json
 output/
-.venv/.pytest_cache/
+.venv/
+.pytest_cache/

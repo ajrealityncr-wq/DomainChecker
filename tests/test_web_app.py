@@ -211,3 +211,16 @@ def test_stop_endpoint(client):
     response = client.post(f"/api/searches/{job_id}/stop")
     assert response.status_code == 409
     assert "not running" in response.json()["detail"]
+
+
+def test_delete_search_endpoint(client):
+    job_id = client.post("/api/searches", json={"keyword": "real estate", "tlds": [".com"]}).json()["id"]
+    wait_for_job(client, job_id)
+    assert client.delete(f"/api/searches/{job_id}").json() == {"id": job_id, "deleted": True}
+    assert client.get(f"/api/searches/{job_id}").status_code == 404
+    assert client.delete(f"/api/searches/{job_id}").status_code == 404
+    assert client.get("/api/domains").json()["total"] > 0
+
+
+def test_new_extensions_are_offered(client):
+    assert {".io", ".app", ".dev"} <= set(client.get("/api/config").json()["tlds"])

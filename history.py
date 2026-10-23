@@ -139,6 +139,18 @@ class DomainHistory:
             finally:
                 db.close()
 
+    def release_unanswered(self) -> int:
+        """Make every generated-but-unanswered domain available again. Used at startup, when no search
+        is running, so names reserved by a search that was interrupted are not lost."""
+        with self._lock:
+            db = self._connect()
+            try:
+                count = db.execute("DELETE FROM seen_domains WHERE checked_at IS NULL").rowcount
+                db.commit()
+            finally:
+                db.close()
+        return count
+
     def library(self, limit: int | None = None, offset: int = 0,
                 domains: list[str] | None = None) -> tuple[list[dict[str, Any]], int]:
         """Domains with a known answer, newest first, and how many there are in total.

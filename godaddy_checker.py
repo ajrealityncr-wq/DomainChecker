@@ -13,6 +13,7 @@ import logging
 import os
 import re
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
@@ -202,12 +203,33 @@ def retry_delay(response: requests.Response, config: dict[str, Any], attempt: in
         return backoff_delay(config, attempt)
 
 
+class RequestPacer:
+    """Spaces GoDaddy requests evenly across every search, recheck and thread in this process."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._next_slot = 0.0
+
+    def wait(self) -> None:
+        interval = 60.0 / float(settings.GODADDY_REQUESTS_PER_MINUTE)
+        with self._lock:
+            now = time.monotonic()
+            slot = max(now, self._next_slot)
+            self._next_slot = slot + interval
+        if slot > now:
+            time.sleep(slot - now)
+
+
+pacer = RequestPacer()
+
+
 def check_batch(batch: list[str], config: dict[str, Any], pat: str, logger: logging.Logger) -> tuple[list[CheckResult], str | None]:
     """Return (results, error). Raises AuthError when the token is rejected."""
     payload = {"domains": batch, "optimizeFor": config["optimize_for"]}
     headers = {"Authorization": f"Bearer {pat}", "Content-Type": "application/json", "Accept": "application/json"}
     retries = int(config["max_retries"])
     for attempt in range(retries + 1):
+        pacer.wait()
         try:
             response = requests.post(config["api_url"], headers=headers, json=payload, timeout=float(config["timeout_seconds"]))
         except requests.RequestException as exc:

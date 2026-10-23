@@ -38,6 +38,14 @@ class SearchError(RuntimeError):
     """A user-facing failure, such as a missing token. The message is shown in the UI."""
 
 
+class ExhaustedError(SearchError):
+    """Every name for this keyword and these extensions has been used. Carries what to try next."""
+
+    def __init__(self, message: str, suggestions: dict[str, list[str]]) -> None:
+        super().__init__(message)
+        self.suggestions = suggestions
+
+
 class LimitError(RuntimeError):
     """The app is at its limit for concurrent or daily searches."""
 
@@ -199,6 +207,39 @@ def to_offer(result: gc.CheckResult, budget: dict[str, Any], terms: list[str]) -
 
 
 
+def preview_domains(request: SearchRequest, history: DomainHistory) -> tuple[str | None, list[str]]:
+    """The names the next search would check, without reserving them (for the command-line generator)."""
+    industry, domains = plan_domains(request)
+    return industry, history.unseen(domains)[: settings.CANDIDATES_PER_SEARCH * len(request.tlds)]
+
+
+def keyword_suggestions(request: SearchRequest, history: DomainHistory) -> dict[str, list[str]]:
+    """What to try when a keyword has no new names: related keywords and other extensions that still have names."""
+    keyword = request.keyword.strip().lower()
+    terms = tokenize_keywords(keyword)
+    industry = infer_industry(keyword)
+    candidates = list(settings.RELATED_KEYWORDS.get(keyword, ()))
+    candidates += terms if len(terms) > 1 else []
+    candidates += list(settings.INDUSTRY_VOCABULARY.get(industry, ())) if industry else []
+    keywords: list[str] = []
+    for candidate in dict.fromkeys(candidates):
+        if len(keywords) >= settings.MAX_KEYWORD_SUGGESTIONS:
+            break
+        if candidate == keyword:
+            continue
+        try:
+            other = SearchRequest(keyword=candidate, tlds=request.tlds)
+        except ValueError:
+            continue
+        if history.unseen(plan_domains(other)[1]):
+            keywords.append(candidate)
+    extensions = []
+    for tld in settings.ALLOWED_TLDS:
+        if tld not in request.tlds and history.unseen(plan_domains(SearchRequest(keyword=keyword, tlds=(tld,)))[1]):
+            extensions.append(tld)
+    return {"keywords": keywords, "extensions": extensions}
+
+
 def next_domains(request: SearchRequest, history: DomainHistory) -> tuple[str | None, list[str]]:
     """The next names for this request that have never been generated, and record them as generated.
 
@@ -208,7 +249,8 @@ def next_domains(request: SearchRequest, history: DomainHistory) -> tuple[str | 
         industry, domains = plan_domains(request)
         unseen = history.unseen(domains)
         if not unseen:
-            raise SearchError("No new names are left for this keyword. Try a different keyword or extension.")
+            raise ExhaustedError("No new names are left for this keyword. Try a different keyword or extension.",
+                                 keyword_suggestions(request, history))
         chosen = unseen[: settings.CANDIDATES_PER_SEARCH * len(request.tlds)]
         terms = tokenize_keywords(request.keyword)
         scores = {domain: brand.score(domain.rsplit(".", 1)[0], terms) for domain in chosen}
@@ -247,6 +289,7 @@ def execute(request: SearchRequest, check_fn: CheckFn, progress: Progress,
     skipped_registered = 0
     total = checked_before = 0
     exhausted = stopped = False
+    suggestions: dict[str, list[str]] = {"keywords": [], "extensions": []}
     industry: str | None = None
     for round_number in range(1, settings.MAX_ROUNDS_PER_SEARCH + 1):
         if should_stop():
@@ -254,10 +297,11 @@ def execute(request: SearchRequest, check_fn: CheckFn, progress: Progress,
             break
         try:
             industry, domains = next_domains(request, history)
-        except SearchError:
+        except ExhaustedError as exc:
             if round_number == 1:
                 raise
             exhausted = True
+            suggestions = exc.suggestions
             break
         total += len(domains)
         label = f" (round {round_number})" if round_number > 1 else ""
@@ -313,6 +357,7 @@ def execute(request: SearchRequest, check_fn: CheckFn, progress: Progress,
         "skipped_registered": skipped_registered,
         "names_checked": checked_before,
         "names_exhausted": exhausted,
+        "suggestions": suggestions,
         "stopped": stopped,
         "trademark_checked": not isinstance(screen, trademark.NotConfiguredScreen),
     }
@@ -332,14 +377,19 @@ class JobStore:
                 "CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, status TEXT NOT NULL,"
                 " created_at REAL NOT NULL, body TEXT NOT NULL)"
             )
+            # A search that was running when the server stopped keeps the names it had found.
             for job_id, body in db.execute("SELECT id, body FROM jobs WHERE status IN ('queued', 'running')").fetchall():
                 job = json.loads(body)
-                job.update(status="failed", error="The server stopped during this search. Run it again.")
-                db.execute("UPDATE jobs SET status = ?, body = ? WHERE id = ?", ("failed", json.dumps(job), job_id))
+                job.update(status="done", stage="Interrupted by a server restart", interrupted=True,
+                           names_checked=job.get("checked", 0))
+                db.execute("UPDATE jobs SET status = ?, body = ? WHERE id = ?", ("done", json.dumps(job), job_id))
             db.execute("DELETE FROM jobs WHERE created_at < ?", (time.time() - settings.JOB_RETENTION_DAYS * 86400,))
             db.commit()
         finally:
             db.close()
+        # No search runs while the store starts, so any reserved-but-unanswered name was left by an
+        # interrupted search. Releasing it lets a later search check it.
+        DomainHistory(path).release_unanswered()
 
     def _connect(self) -> sqlite3.Connection:
         return sqlite3.connect(self._path, timeout=10)
@@ -408,6 +458,23 @@ class JobStore:
             job["stop_requested"] = True
             self._save(job)
         return True
+
+    def delete(self, job_id: str) -> str:
+        """Remove a finished search from History: "deleted", "running" or "missing".
+        Its domains stay in the domain record, so they are still never checked twice."""
+        with self._lock:
+            job = self._load(job_id)
+            if job is None:
+                return "missing"
+            if job["status"] in {"queued", "running"}:
+                return "running"
+            db = self._connect()
+            try:
+                db.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+                db.commit()
+            finally:
+                db.close()
+        return "deleted"
 
     def stop_requested(self, job_id: str) -> bool:
         job = self.get(job_id)
@@ -508,6 +575,8 @@ def run_job(store: JobStore, job_id: str, request: SearchRequest, check_fn: Chec
     try:
         outcome = execute(request, check_fn, lambda **fields: store.update(job_id, **fields), screen,
                           should_stop=lambda: store.stop_requested(job_id))
+    except ExhaustedError as exc:
+        store.update(job_id, status="failed", stage="Stopped", error=str(exc), suggestions=exc.suggestions)
     except (SearchError, gc.AuthError) as exc:
         store.update(job_id, status="failed", stage="Stopped", error=str(exc))
     except Exception:
@@ -523,6 +592,7 @@ def run_job(store: JobStore, job_id: str, request: SearchRequest, check_fn: Chec
             skipped_registered=outcome["skipped_registered"],
             names_checked=outcome["names_checked"],
             names_exhausted=outcome["names_exhausted"],
+            suggestions=outcome["suggestions"],
             stopped=outcome["stopped"],
             trademark_checked=outcome["trademark_checked"],
         )

@@ -10,7 +10,8 @@ ROOT = Path(__file__).resolve().parent
 OUTPUT_DIRECTORY = ROOT / "output"
 
 # ---- Search inputs --------------------------------------------------------
-ALLOWED_TLDS = (".com", ".in", ".ai", ".co")
+# .app and .dev only work over HTTPS (browsers require it for these extensions).
+ALLOWED_TLDS = (".com", ".in", ".ai", ".co", ".io", ".app", ".dev")
 DEFAULT_TLDS = (".com", ".in")
 CURRENCY = "INR"
 DEFAULT_MAX_PRICE = 5000
@@ -37,7 +38,11 @@ GODADDY_API_URL = "https://api.godaddy.com/v3/domains/check-availability"
 OPTIMIZE_FOR = "ACCURACY"
 BATCH_SIZE = 25
 TIMEOUT_SECONDS = 30
-DELAY_BETWEEN_BATCHES_SECONDS = 1
+# Every GoDaddy request from every search and recheck shares this pace, so running searches
+# together never exceeds GoDaddy's rate limit (60 requests a minute for the domains API).
+GODADDY_REQUESTS_PER_MINUTE = 50
+# Extra pause between one search's batches. The shared pace above already spaces requests.
+DELAY_BETWEEN_BATCHES_SECONDS = 0
 MAX_RETRIES = 5
 RETRY_BACKOFF_SECONDS = 2
 MAX_RETRY_DELAY_SECONDS = 120
@@ -100,6 +105,19 @@ INDUSTRY_VOCABULARY = {
     "technology": ("byte", "data", "code", "grid", "logic", "node", "stack", "cloud", "labs"),
     "finance": ("fund", "capital", "cash", "vault", "credit", "loan", "wealth", "gain"),
 }
+
+# ---- Suggestions when a keyword runs out of names --------------------------
+# Related keywords offered when a search has used every name for its keyword. Each keyword word
+# is also offered on its own, and so are the industry words of a matched industry.
+RELATED_KEYWORDS = {
+    "automation": ("autopilot", "workflow", "robot", "auto", "flow"),
+    "tag": ("label", "tagger", "badge", "mark"),
+    "fitness": ("fit", "gym", "workout", "active", "health"),
+    "real estate": ("realty", "property", "homes", "estate", "nest"),
+    "finance": ("fin", "money", "wealth", "capital", "fund"),
+    "technology": ("byte", "data", "cloud", "stack", "logic"),
+}
+MAX_KEYWORD_SUGGESTIONS = 6
 
 # ---- Brand quality --------------------------------------------------------
 # Names scoring below this (0-100, see brand.py) are not shown.

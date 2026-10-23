@@ -131,6 +131,16 @@ def create_app(check_fn: ss.CheckFn = gc.check_batch, store: ss.JobStore | None 
             raise HTTPException(status_code=404, detail="Unknown domain")
         return {"domain": domain.lower(), "starred": body.starred}
 
+    @app.delete("/api/searches/{job_id}")
+    def delete_search(job_id: str) -> dict[str, object]:
+        """Remove a search from History. Its domains stay in All domains."""
+        outcome = job_store().delete(job_id)
+        if outcome == "missing":
+            raise HTTPException(status_code=404, detail="Unknown search")
+        if outcome == "running":
+            raise HTTPException(status_code=409, detail="Stop the search before deleting it")
+        return {"id": job_id, "deleted": True}
+
     @app.post("/api/searches/{job_id}/stop", status_code=202)
     def stop_search(job_id: str) -> dict[str, object]:
         """Stop a running search after its current batch. The names found so far are kept."""

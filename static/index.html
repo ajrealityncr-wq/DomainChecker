@@ -101,6 +101,7 @@
         </div>
       </form>
       <div class="status" id="status" role="status" aria-live="polite"></div>
+      <div class="actions hidden" id="suggestions" style="margin-top:8px"></div>
     </section>
     <section class="card hidden" id="search-results">
       <div class="results-panel"></div>
@@ -115,6 +116,9 @@
   <div id="view-history" role="tabpanel" class="hidden">
     <section class="card">
       <h2>Search history</h2>
+      <label style="margin-bottom:12px; max-width:320px">Find a search
+        <input type="text" id="history-filter" placeholder="keyword…">
+      </label>
       <div class="table-wrap">
         <table>
           <thead><tr><th>When</th><th>Keyword</th><th>Extensions</th><th class="num">Available</th><th class="num">Within budget</th><th class="num">Cheapest</th><th>Status</th><th></th></tr></thead>
@@ -278,7 +282,12 @@
 
     function statusCell(row) {
       const td = el("td");
-      if (row.available === false) { td.append(tag("taken", "out")); return td; }
+      if (row.available === false) {
+        td.append(tag("taken", "out"));
+        // A starred name that is taken may come free again; Recheck asks GoDaddy.
+        if (shortlist.has(row.domain)) td.append(tag(onRecheck ? "starred · recheck later" : "starred", "warn"));
+        return td;
+      }
       td.append(tag("available", "in"));
       if (row.within_budget === true) td.append(tag("within budget", "in"));
       if (row.within_budget === false) td.append(tag("over budget", "out"));
@@ -420,7 +429,8 @@
     return job.max_price !== null || job.max_renewal_price !== null ? `${found}, ${withinBudget(job)} within budget` : found;
   }
   function doneText(job) {
-    let text = `${job.stopped ? "Stopped" : "Done"}. Checked ${job.names_checked ?? job.total} names; ${foundText(job)}.`;
+    const outcome = job.interrupted ? "Interrupted by a server restart" : job.stopped ? "Stopped" : "Done";
+    let text = `${outcome}. Checked ${job.names_checked ?? job.total} names; ${foundText(job)}.`;
     if (job.names_exhausted) text += " No new names are left for this keyword; try another keyword or extension.";
     return text;
   }
@@ -432,6 +442,32 @@
     resultsCard.classList.toggle("hidden", job.offers.length === 0);
   }
 
+  // When a keyword runs out of names: one-click searches for related keywords or other extensions.
+  const suggestionsEl = document.getElementById("suggestions");
+  function showSuggestions(job) {
+    const { keywords = [], extensions = [] } = job.suggestions || {};
+    suggestionsEl.classList.toggle("hidden", keywords.length + extensions.length === 0);
+    if (!keywords.length && !extensions.length) return;
+    const keywordButtons = keywords.map(keyword => {
+      const button = el("button", { type: "button", className: "secondary small", textContent: keyword });
+      button.addEventListener("click", () => {
+        document.getElementById("keyword").value = keyword;
+        form.requestSubmit();
+      });
+      return button;
+    });
+    const extensionButtons = extensions.map(ext => {
+      const button = el("button", { type: "button", className: "secondary small", textContent: `add ${ext}` });
+      button.addEventListener("click", () => {
+        const box = [...document.querySelectorAll("#tlds input")].find(input => input.value === ext);
+        if (box) box.checked = true;
+        form.requestSubmit();
+      });
+      return button;
+    });
+    suggestionsEl.replaceChildren(el("span", { className: "count", textContent: "Try:" }), ...keywordButtons, ...extensionButtons);
+  }
+
   async function poll(jobId) {
     try {
       const response = await fetch(`/api/searches/${jobId}`);
@@ -440,6 +476,7 @@
       if (job.status === "done") {
         clearInterval(pollTimer);
         setStatus(doneText(job));
+        showSuggestions(job);
         shownOffers = -1;
         showOffers(job);
         resultsCard.classList.remove("hidden");
@@ -449,6 +486,7 @@
       } else if (job.status === "failed") {
         clearInterval(pollTimer);
         setStatus(job.error || "The search failed.", true);
+        showSuggestions(job);
         finish();
       } else {
         showOffers(job);
@@ -474,6 +512,7 @@
     runAgain.classList.add("hidden");
     resultsCard.classList.add("hidden");
     shownOffers = -1;
+    suggestionsEl.classList.add("hidden");
     stopButton.disabled = false;
     stopButton.textContent = "Stop searching";
     setStatus("Starting…");
@@ -521,19 +560,48 @@
       td.append(el("span", { className: "progress", textContent: search.total ? `${search.stage} · ${search.checked} of ${search.total}` : (search.stage || "") }));
     } else if (search.status === "failed" && search.error) {
       td.append(el("span", { className: "progress", textContent: search.error }));
+    } else if (search.stage && search.stage !== "Finished") {
+      td.append(el("span", { className: "progress", textContent: search.stage }));
     }
     return td;
   }
 
+  let allSearches = [];
+  const historyFilter = document.getElementById("history-filter");
+  historyFilter.addEventListener("input", () => renderHistory());
+
+  async function deleteSearch(search) {
+    if (!confirm(`Remove the "${search.keyword}" search from History? Its domains stay in All domains.`)) return;
+    const response = await fetch(`/api/searches/${search.id}`, { method: "DELETE" });
+    if (response.ok) loadHistory();
+  }
+
   async function loadHistory() {
     const response = await fetch("/api/searches");
-    const { searches } = await response.json();
+    allSearches = (await response.json()).searches;
+    renderHistory();
+    // Keep the list live while a search is running and this tab is open.
+    clearTimeout(historyTimer);
+    const running = allSearches.some(search => search.status === "queued" || search.status === "running");
+    const visible = !document.getElementById("view-history").classList.contains("hidden");
+    if (running && visible) historyTimer = setTimeout(loadHistory, 2000);
+  }
+
+  function renderHistory() {
+    const needle = historyFilter.value.trim().toLowerCase();
+    const searches = allSearches.filter(search => !needle || search.keyword.toLowerCase().includes(needle));
     const rowsEl = document.getElementById("history-rows");
-    document.getElementById("history-empty").classList.toggle("hidden", searches.length > 0);
+    const empty = document.getElementById("history-empty");
+    empty.textContent = allSearches.length ? "No searches match." : "No searches yet.";
+    empty.classList.toggle("hidden", searches.length > 0);
     rowsEl.replaceChildren(...searches.map(search => {
       const view = el("button", { type: "button", className: "link", textContent: "View results",
         disabled: search.status === "failed" || search.status === "queued" });
       view.addEventListener("click", () => openSearch(search));
+      const running = search.status === "queued" || search.status === "running";
+      const remove = el("button", { type: "button", className: "link", textContent: "Delete", disabled: running,
+        title: running ? "Stop the search before deleting it" : "Remove from History" });
+      remove.addEventListener("click", () => deleteSearch(search));
       return el("tr", {},
         el("td", { textContent: when(search.created_at) }),
         el("td", { textContent: search.keyword }),
@@ -542,13 +610,8 @@
         el("td", { className: "num", textContent: search.max_price === null ? "—" : search.within_budget }),
         el("td", { className: "num", textContent: money(search.cheapest, search.currency) }),
         historyStatus(search),
-        el("td", {}, view));
+        el("td", { className: "row-actions" }, view, remove));
     }));
-    // Keep the list live while a search is running and this tab is open.
-    clearTimeout(historyTimer);
-    const running = searches.some(search => search.status === "queued" || search.status === "running");
-    const visible = !document.getElementById("view-history").classList.contains("hidden");
-    if (running && visible) historyTimer = setTimeout(loadHistory, 2000);
   }
 
   async function openSearch(search) {

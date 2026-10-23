@@ -25,3 +25,10 @@ def one_round_per_search(monkeypatch):
     """A real search runs until stopped; tests run one round unless they test rounds."""
     import settings
     monkeypatch.setattr(settings, "MAX_ROUNDS_PER_SEARCH", 1)
+
+
+@pytest.fixture(autouse=True)
+def no_request_pacing(monkeypatch):
+    """Tests never wait for the shared GoDaddy request pace."""
+    import godaddy_checker
+    monkeypatch.setattr(godaddy_checker.pacer, "wait", lambda: None)
