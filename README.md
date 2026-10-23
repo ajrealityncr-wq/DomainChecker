@@ -18,6 +18,8 @@ Copy-Item .env.example .env
 
 Put your GoDaddy Personal Access Token in `.env` as `GODADDY_PAT=...`, or set it as an environment variable. The token is never written to files or logs. Do not commit `.env`.
 
+**The token is checked first.** When the app starts and when the page opens, it sends one small availability request to GoDaddy with your token. If the token is missing, or GoDaddy rejects it, the page says what to fix and Search stays disabled. Fix the token in `.env` and press **Check again**; there is no need to restart the app.
+
 ## Use the web app
 
 ```powershell

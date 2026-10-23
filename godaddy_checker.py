@@ -27,9 +27,9 @@ import settings
 from history import DomainHistory
 
 try:
-    from dotenv import load_dotenv
+    from dotenv import dotenv_values
 except ImportError:  # pragma: no cover - requirements.txt installs this package
-    load_dotenv = None
+    dotenv_values = None
 
 
 DOMAIN_RE = re.compile(
@@ -182,13 +182,39 @@ def drop_resolved_errors(errors: list[dict[str, Any]], processed: dict[str, Any]
 def load_pat() -> str | None:
     """The token comes from the environment or the project's .env file. It is never written to files or logs.
 
-    .env is read here, not only in the command-line entry point, so the web app finds the token too.
-    Variables already set in the environment take precedence over .env.
+    An environment variable takes precedence over .env. .env is read on every call and never copied
+    into the environment, so a token fixed in .env is used without restarting the app.
     """
-    if load_dotenv:
-        load_dotenv(settings.ROOT / ".env")
-    token = os.getenv("GODADDY_PAT", "").strip()
+    token = os.environ.get("GODADDY_PAT", "").strip()
+    if not token and dotenv_values:
+        token = str(dotenv_values(settings.ROOT / ".env").get("GODADDY_PAT") or "").strip()
     return token or None
+
+
+TOKEN_HELP = (
+    "Create a Personal Access Token in your GoDaddy developer account, put it in the .env file next to "
+    "the app as GODADDY_PAT=your-token (or set the GODADDY_PAT environment variable), then check again."
+)
+
+
+def verify_token(check_fn: Callable[..., Any] | None = None) -> dict[str, str]:
+    """Check the GoDaddy token with one availability request.
+
+    Returns {"status", "message"}. Status is "valid", "missing" (no token set), "invalid" (GoDaddy
+    rejected it) or "unreachable" (GoDaddy could not be asked; the token may still be fine).
+    """
+    pat = load_pat()
+    if not pat:
+        return {"status": "missing", "message": f"The GoDaddy token is not set. {TOKEN_HELP}"}
+    # One quick try: a token check should answer in seconds, not wait through every retry.
+    config = {**default_config(), "max_retries": 0, "timeout_seconds": 15}
+    try:
+        _, error = (check_fn or check_batch)([settings.TOKEN_CHECK_DOMAIN], config, pat, logger)
+    except AuthError:
+        return {"status": "invalid", "message": f"GoDaddy rejected the token: it is wrong, expired, or lacks domain access. {TOKEN_HELP}"}
+    if error:
+        return {"status": "unreachable", "message": f"Could not reach GoDaddy to check the token ({error}). Check your internet connection, then check again."}
+    return {"status": "valid", "message": "The GoDaddy token is valid."}
 
 
 def backoff_delay(config: dict[str, Any], attempt: int) -> float:
@@ -245,7 +271,7 @@ def check_batch(batch: list[str], config: dict[str, Any], pat: str, logger: logg
             time.sleep(delay)
             continue
         if response.status_code in AUTH_STATUS_CODES:
-            raise AuthError(f"authentication/authorization failed (HTTP {response.status_code}); check GODADDY_PAT and its permissions")
+            raise AuthError(f"GoDaddy rejected the token (HTTP {response.status_code}). {TOKEN_HELP}")
         if not response.ok:
             return [], f"GoDaddy returned HTTP {response.status_code}"
         try:
@@ -693,8 +719,6 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = build_parser().parse_args()
     root = settings.ROOT
-    if load_dotenv:
-        load_dotenv(root / ".env")
     config = default_config()
     try:
         logger = configure_logging(root, config)

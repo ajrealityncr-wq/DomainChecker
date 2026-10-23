@@ -11,6 +11,7 @@ Each deduction comes with a short reason that the results page shows.
 from __future__ import annotations
 
 import re
+from functools import lru_cache
 
 import settings
 
@@ -36,6 +37,12 @@ def syllables(name: str) -> int:
     return max(1, count)
 
 
+@lru_cache(maxsize=8)
+def _endings(suffixes: tuple[str, ...], inflections: tuple[str, ...]) -> tuple[str, ...]:
+    """Suffixes and inflections, longest first, so the longest ending matches first."""
+    return tuple(sorted(set(suffixes) | set(inflections), key=len, reverse=True))
+
+
 def addon_count(name: str, terms: list[str]) -> int:
     """How many prefixes and suffixes are attached to the keyword (0 for the bare keyword)."""
     joined = "".join(terms)
@@ -45,7 +52,7 @@ def addon_count(name: str, terms: list[str]) -> int:
         return 1
     count = 1 if position > 0 else 0
     rest = name[position + len(joined):]
-    endings = sorted(set(settings.SUFFIXES) | set(settings.INFLECTIONS), key=len, reverse=True)
+    endings = _endings(tuple(settings.SUFFIXES), tuple(settings.INFLECTIONS))
     while rest:
         match = next((ending for ending in endings if rest.startswith(ending)), None)
         count += 1

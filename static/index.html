@@ -57,6 +57,8 @@
     .score { font-weight: 600; white-space: nowrap; }
     .score-notes { display: block; font-size: 0.75rem; color: var(--muted); }
     .free { color: var(--ok); font-weight: 600; }
+    .token-card { border-color: var(--warn); }
+    .token-card h2 { color: var(--warn); }
     .progress { display: block; font-size: 0.75rem; color: var(--muted); }
     @media (max-width: 560px) {
       .col-renewal, .col-keyword, .col-checked, .col-total { display: none; }
@@ -69,6 +71,15 @@
 <main>
   <h1>Domain Search</h1>
   <p class="lead">Find available, brand-like domain names for a keyword, see what they cost, and keep every result.</p>
+
+  <section class="card token-card" id="token-card" role="alert">
+    <h2 id="token-title">Checking your GoDaddy token…</h2>
+    <p id="token-message" style="margin:0 0 12px"></p>
+    <div class="actions">
+      <button type="button" id="token-recheck" class="hidden">Check again</button>
+      <span class="count" id="token-checked"></span>
+    </div>
+  </section>
 
   <nav class="tabs" role="tablist">
     <button type="button" role="tab" id="tab-search" aria-selected="true" data-view="search">Search</button>
@@ -418,7 +429,7 @@
     return `${job.stage || "Working"}${detail}…`;
   }
   function finish() {
-    submit.disabled = false;
+    submit.disabled = !tokenOk;
     runAgain.classList.remove("hidden");
     stopButton.classList.add("hidden");
     currentJob = null;
@@ -488,6 +499,7 @@
         setStatus(job.error || "The search failed.", true);
         showSuggestions(job);
         finish();
+        checkToken(true);  // a search can fail because the token stopped working; show the banner if so
       } else {
         showOffers(job);
         const found = job.status === "running" ? ` · ${foundText(job)} so far` : "";
@@ -520,6 +532,7 @@
       const response = await fetch("/api/searches", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       if (!response.ok) {
         const problem = await response.json().catch(() => ({}));
+        if (response.status === 409) checkToken(true);  // the server found a token problem
         throw new Error(typeof problem.detail === "string" ? problem.detail : "Check the form and try again.");
       }
       const { id } = await response.json();
@@ -653,6 +666,7 @@
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
+      if (response.status === 409) checkToken(true);
       recheckNotice.textContent = typeof data.detail === "string" ? data.detail : "The recheck failed.";
       recheckNotice.classList.remove("hidden");
       return;
@@ -662,7 +676,43 @@
     domainsPanel.updateRows(data.domains);
   }
 
+  // ---------- GoDaddy token: checked first; searching waits until it is valid ----------
+  let tokenOk = false;
+  const tokenCard = document.getElementById("token-card");
+  const tokenRecheck = document.getElementById("token-recheck");
+  const tokenTitles = {
+    missing: "Add your GoDaddy token to start",
+    invalid: "Your GoDaddy token needs fixing",
+    unreachable: "Could not check your GoDaddy token",
+  };
+
+  async function checkToken(refresh = false) {
+    tokenRecheck.disabled = true;
+    tokenRecheck.textContent = "Checking…";
+    let status;
+    try {
+      const response = await fetch(`/api/token${refresh ? "?refresh=true" : ""}`);
+      status = await response.json();
+    } catch {
+      status = { status: "unreachable", message: "Could not reach the app server. Make sure it is running, then check again." };
+    }
+    tokenOk = status.status === "valid";
+    tokenCard.classList.toggle("hidden", tokenOk);
+    document.getElementById("token-title").textContent = tokenTitles[status.status] || "Your GoDaddy token needs fixing";
+    document.getElementById("token-message").textContent = status.message;
+    document.getElementById("token-checked").textContent = status.checked_at ? `Last checked ${when(status.checked_at)}` : "";
+    tokenRecheck.classList.remove("hidden");
+    tokenRecheck.disabled = false;
+    tokenRecheck.textContent = "Check again";
+    if (!currentJob) submit.disabled = !tokenOk;
+    submit.title = tokenOk ? "" : "Fix the GoDaddy token first";
+    return tokenOk;
+  }
+  tokenRecheck.addEventListener("click", () => checkToken(true));
+
   // ---------- start ----------
+  submit.disabled = true;  // until the token check passes
+  checkToken();
   (async function init() {
     try {
       const [configResponse, shortlistResponse] = await Promise.all([fetch("/api/config"), fetch("/api/shortlist")]);

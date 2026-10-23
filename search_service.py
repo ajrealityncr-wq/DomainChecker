@@ -240,13 +240,15 @@ def keyword_suggestions(request: SearchRequest, history: DomainHistory) -> dict[
     return {"keywords": keywords, "extensions": extensions}
 
 
-def next_domains(request: SearchRequest, history: DomainHistory) -> tuple[str | None, list[str]]:
+def next_domains(request: SearchRequest, history: DomainHistory,
+                 plan: tuple[str | None, list[str]] | None = None) -> tuple[str | None, list[str]]:
     """The next names for this request that have never been generated, and record them as generated.
 
-    Runs under one lock, so two searches at the same time cannot take the same name.
+    Runs under one lock, so two searches at the same time cannot take the same name. A search that
+    runs many rounds passes its `plan` (from plan_domains) so the names are not built again each round.
     """
     with _plan_lock:
-        industry, domains = plan_domains(request)
+        industry, domains = plan or plan_domains(request)
         unseen = history.unseen(domains)
         if not unseen:
             raise ExhaustedError("No new names are left for this keyword. Try a different keyword or extension.",
@@ -258,11 +260,9 @@ def next_domains(request: SearchRequest, history: DomainHistory) -> tuple[str | 
     return industry, chosen
 
 
-def _offers(results: list[gc.CheckResult], budget: dict[str, Any], terms: list[str]) -> list[dict[str, Any]]:
-    offers = [to_offer(result, budget, terms) for result in results if result.available is True]
+def _sorted_offers(offers: list[dict[str, Any]]) -> list[dict[str, Any]]:
     # Names that break a limit go last; then the strongest brand names, then the cheapest.
-    offers.sort(key=lambda offer: (offer["within_budget"] is False, -offer["brand_score"], offer["price"] is None, offer["price"] or 0, offer["domain"]))
-    return offers
+    return sorted(offers, key=lambda offer: (offer["within_budget"] is False, -offer["brand_score"], offer["price"] is None, offer["price"] or 0, offer["domain"]))
 
 
 def execute(request: SearchRequest, check_fn: CheckFn, progress: Progress,
@@ -284,7 +284,8 @@ def execute(request: SearchRequest, check_fn: CheckFn, progress: Progress,
 
     budget = budget_config(request)
     terms = tokenize_keywords(request.keyword)
-    results: list[gc.CheckResult] = []
+    plan = plan_domains(request)  # built once; every round takes the next unused names from it
+    offers: list[dict[str, Any]] = []  # each available result is scored once, as it arrives
     failed: list[str] = []
     skipped_registered = 0
     total = checked_before = 0
@@ -296,7 +297,7 @@ def execute(request: SearchRequest, check_fn: CheckFn, progress: Progress,
             stopped = True
             break
         try:
-            industry, domains = next_domains(request, history)
+            industry, domains = next_domains(request, history, plan)
         except ExhaustedError as exc:
             if round_number == 1:
                 raise
@@ -306,7 +307,6 @@ def execute(request: SearchRequest, check_fn: CheckFn, progress: Progress,
         total += len(domains)
         label = f" (round {round_number})" if round_number > 1 else ""
         answered: set[str] = set()  # names whose outcome is known: registered, or answered by GoDaddy
-        round_results: list[gc.CheckResult] = []
         try:
             progress(industry=industry, total=total, checked=checked_before, stage=f"Checking for registered names{label}")
             registered = gc.rdap_statuses(domains, config, on_progress=lambda done: progress(checked=checked_before + done))
@@ -324,17 +324,16 @@ def execute(request: SearchRequest, check_fn: CheckFn, progress: Progress,
                 # Store each answer as it arrives, so a stopped run never re-sends what GoDaddy already answered.
                 history.mark_checked({result.domain: gc.answer_for(result) for result in batch_results})
                 if not error:
-                    round_results.extend(batch_results)
+                    offers.extend(to_offer(result, budget, terms) for result in batch_results if result.available is True)
                 # Show the names found so far, so the user can stop once they see the one they want.
-                progress(checked=base + checked, offers=_offers(results + round_results, budget, terms))
+                progress(checked=base + checked, offers=_sorted_offers(offers))
                 if should_stop():
                     raise _StopRequested
 
-            fresh, round_failed = gc.check_in_batches(to_check, config, pat, check_fn, logger, on_batch)
+            _, round_failed = gc.check_in_batches(to_check, config, pat, check_fn, logger, on_batch)
         except _StopRequested:
             # Names that were never sent can be used by a later search.
             history.release([domain for domain in domains if domain not in answered])
-            results.extend(round_results)
             checked_before += len(answered)
             stopped = True
             break
@@ -344,15 +343,13 @@ def execute(request: SearchRequest, check_fn: CheckFn, progress: Progress,
             raise
         # Names GoDaddy did not answer for can be tried again later.
         history.release(round_failed)
-        results.extend(fresh)
         failed.extend(round_failed)
         checked_before += len(domains)
         if round_failed:
             break  # GoDaddy is having trouble; released names would only come back in the next round
 
-    offers = trademark.apply_screen(_offers(results, budget, terms), screen)
     return {
-        "offers": offers,
+        "offers": trademark.apply_screen(_sorted_offers(offers), screen),
         "failed": failed,
         "skipped_registered": skipped_registered,
         "names_checked": checked_before,
@@ -370,6 +367,7 @@ class JobStore:
         path = path or settings.APP_DATABASE
         self._path = path
         self._lock = threading.Lock()
+        self._stop: set[str] = set()  # searches asked to stop; read after every batch, so kept in memory
         path.parent.mkdir(parents=True, exist_ok=True)
         db = self._connect()
         try:
@@ -457,6 +455,7 @@ class JobStore:
                 return False
             job["stop_requested"] = True
             self._save(job)
+            self._stop.add(job_id)
         return True
 
     def delete(self, job_id: str) -> str:
@@ -477,8 +476,7 @@ class JobStore:
         return "deleted"
 
     def stop_requested(self, job_id: str) -> bool:
-        job = self.get(job_id)
-        return bool(job and job.get("stop_requested"))
+        return job_id in self._stop
 
     def list_jobs(self, limit: int = 200) -> list[dict[str, Any]]:
         """Past searches, newest first, without their offers (summaries for the history page)."""
@@ -568,21 +566,52 @@ def recheck(domains: list[str], check_fn: CheckFn = gc.check_batch, history: Dom
     return [_with_details(row) for row in rows]
 
 
+class _ThrottledProgress:
+    """Writes a running search's progress to the job store at most every PROGRESS_INTERVAL seconds.
+
+    Each write saves the whole job, offers included, so writing after every batch would make a long
+    search spend most of its time rewriting the same record. A new stage is written at once.
+    """
+
+    PROGRESS_INTERVAL = 0.5
+
+    def __init__(self, store: JobStore, job_id: str) -> None:
+        self._store = store
+        self._job_id = job_id
+        self._pending: dict[str, Any] = {}
+        self._written = 0.0
+
+    def __call__(self, **fields: Any) -> None:
+        self._pending.update(fields)
+        if "stage" in fields or time.monotonic() - self._written >= self.PROGRESS_INTERVAL:
+            self.flush()
+
+    def flush(self) -> None:
+        if self._pending:
+            self._store.update(self._job_id, **self._pending)
+            self._pending = {}
+        self._written = time.monotonic()
+
+
 def run_job(store: JobStore, job_id: str, request: SearchRequest, check_fn: CheckFn,
             screen: trademark.TrademarkScreen | None = None) -> None:
     """Run a search and record its outcome. Every failure lands on the job, never on the thread."""
     store.update(job_id, status="running", stage="Starting")
+    progress = _ThrottledProgress(store, job_id)
     try:
-        outcome = execute(request, check_fn, lambda **fields: store.update(job_id, **fields), screen,
-                          should_stop=lambda: store.stop_requested(job_id))
+        outcome = execute(request, check_fn, progress, screen, should_stop=lambda: store.stop_requested(job_id))
     except ExhaustedError as exc:
+        progress.flush()
         store.update(job_id, status="failed", stage="Stopped", error=str(exc), suggestions=exc.suggestions)
     except (SearchError, gc.AuthError) as exc:
+        progress.flush()
         store.update(job_id, status="failed", stage="Stopped", error=str(exc))
     except Exception:
         logger.exception("search %s failed", job_id)
+        progress.flush()
         store.update(job_id, status="failed", stage="Stopped", error="The search failed. See the server log for details.")
     else:
+        progress.flush()
         store.update(
             job_id,
             status="done",

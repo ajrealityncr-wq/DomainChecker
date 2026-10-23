@@ -224,3 +224,54 @@ def test_delete_search_endpoint(client):
 
 def test_new_extensions_are_offered(client):
     assert {".io", ".app", ".dev"} <= set(client.get("/api/config").json()["tlds"])
+
+
+def rejected_check(batch, config, pat, logger):
+    raise gc.AuthError("HTTP 401")
+
+
+@pytest.fixture
+def client_with_bad_token(monkeypatch, tmp_path):
+    monkeypatch.setattr(gc, "load_pat", lambda: "bad-token")
+    monkeypatch.setattr(gc, "rdap_is_registered", lambda domain, config: None)
+    app = web_app.create_app(check_fn=rejected_check, store=ss.JobStore(tmp_path / "app.sqlite3"))
+    return TestClient(app, base_url=LOCAL)
+
+
+def test_token_status_is_reported(client):
+    assert client.get("/api/token").json()["status"] == "valid"
+
+
+def test_search_is_refused_until_the_token_is_valid(client_with_bad_token):
+    status = client_with_bad_token.get("/api/token").json()
+    assert status["status"] == "invalid"
+    response = client_with_bad_token.post("/api/searches", json={"keyword": "real estate", "tlds": [".com"]})
+    assert response.status_code == 409
+    assert "GODADDY_PAT" in response.json()["detail"]
+    assert client_with_bad_token.get("/api/searches").json()["searches"] == []
+
+
+def test_missing_token_is_reported(client, monkeypatch):
+    monkeypatch.setattr(gc, "load_pat", lambda: None)
+    status = client.get("/api/token?refresh=true").json()
+    assert status["status"] == "missing"
+    assert client.post("/api/searches", json={"keyword": "real estate", "tlds": [".com"]}).status_code == 409
+
+
+def test_check_again_picks_up_a_fixed_token(client, monkeypatch):
+    monkeypatch.setattr(gc, "load_pat", lambda: None)
+    assert client.get("/api/token?refresh=true").json()["status"] == "missing"
+    monkeypatch.setattr(gc, "load_pat", lambda: "token")
+    assert client.get("/api/token").json()["status"] == "valid"  # a failed check is never reused
+    assert client.post("/api/searches", json={"keyword": "real estate", "tlds": [".com"]}).status_code == 202
+
+
+def test_a_valid_token_check_is_reused(client, monkeypatch):
+    assert client.get("/api/token").json()["status"] == "valid"
+    calls = []
+    monkeypatch.setattr(gc, "verify_token", lambda check_fn=None: calls.append(1) or {"status": "valid", "message": ""})
+    client.get("/api/token")
+    client.post("/api/searches", json={"keyword": "real estate", "tlds": [".com"]})
+    assert calls == []
+    client.get("/api/token?refresh=true")
+    assert calls == [1]
