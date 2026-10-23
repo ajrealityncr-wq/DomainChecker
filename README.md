@@ -63,7 +63,16 @@ Results are kept in `output/app.sqlite3`, so a finished search is still there af
 - **History** lists every search you have run, repeats included, with how many names were available, how many were not available, how many were within budget, and the cheapest price. A running search shows its progress. Open a past search to see its domains again, find one by keyword, or delete it (its domains stay in All domains). Searches stay in History for a year.
 - **All domains** lists every domain the app has checked, available or taken, with the keyword it came from, the prices, the brand score, and when it was checked. It loads the newest 1,000 first; **Load more** fetches the next 1,000.
 
-Every results table shows the first-year price, the renewal price, and the **3-year cost** (first year plus two renewals), which shows when a cheap first year hides an expensive renewal. Each table has the same filters: **Show** (all checked names, available only, or not available only), price (any, free first year, first year under an amount, or 3-year cost under an amount), extension, minimum brand score, a name search, starred only, and sort order (cheapest first year, lowest 3-year cost, best brand, name, or newest). The page remembers your filter choices. **Export CSV** downloads the rows that match the filters.
+Every results table shows the first-year price, the renewal price, and the **3-year cost** (first year plus two renewals), which shows when a cheap first year hides an expensive renewal. Each table has **filter groups**, and you can select several options in several groups at once:
+
+- **Availability:** available, not available
+- **Budget:** within budget, over budget (for searches with a price limit)
+- **Price:** free first year, first year under an amount, 3-year cost under an amount (the amount box sets the amount)
+- **Extension:** the extensions in the table, for example `.com` and `.in`
+- **Keyword** (All domains only): the keywords the names came from
+- **Shortlist:** starred
+
+Within a group, a name matches when it has any selected option (`.com` or `.in`). Across groups, a name must match every group that has a selection: available **and** first year under ₹300 **and** `.com` or `.in`. Each button shows how many names it would show with your other selections. **Clear all filters** turns them all off. There are also filters for minimum brand score and name, and a sort order (cheapest first year, lowest 3-year cost, best brand, name, or newest). The page remembers your filter choices. **Export CSV** downloads the rows that match the filters.
 
 On every row:
 
