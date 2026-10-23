@@ -1,8 +1,8 @@
 """Keyword search: readable names that contain the keyword, TLD selection, availability and budget.
 
 A search runs in a background thread. The caller gets a job id, then polls the job store for
-progress and offers. Jobs and cached answers are stored in SQLite. Availability always comes
-from GoDaddy; RDAP is only used to skip names it reports as registered.
+progress and offers. Jobs and every checked domain are stored in SQLite. Availability always
+comes from GoDaddy; RDAP is only used to skip names it reports as registered.
 """
 
 from __future__ import annotations
@@ -23,7 +23,6 @@ import brand
 import godaddy_checker as gc
 import settings
 import trademark
-from cache import DomainCache
 from history import DomainHistory
 
 logger = logging.getLogger("search")
@@ -41,6 +40,10 @@ class SearchError(RuntimeError):
 
 class LimitError(RuntimeError):
     """The app is at its limit for concurrent or daily searches."""
+
+
+class _StopRequested(Exception):
+    """The user pressed Stop. Raised between GoDaddy batches."""
 
 
 def _check_price(label: str, value: float | None) -> None:
@@ -141,10 +144,12 @@ def word_candidates(keyword: str, industry: str | None, limit: int) -> list[str]
             continue
         seen.add(name)
         names.append(name)
-    # Keep names that read like a brand, best first. Ties keep the simpler pattern and the shorter name.
+    # Keep names that read like a brand. Names with one add-on come before names with two, so
+    # stacked names (tagkitbay) are only used once the simpler ones run out. Then best score first,
+    # then the simpler pattern and the shorter name.
     scored = {name: brand.score(name, terms)[0] for name in names}
     names = [name for name in names if scored[name] >= settings.MIN_BRAND_SCORE]
-    names.sort(key=lambda name: (-scored[name], _rank_tier(name, joined), len(name), name))
+    names.sort(key=lambda name: (brand.addon_count(name, terms) >= 2, -scored[name], _rank_tier(name, joined), len(name), name))
     return names[:limit]
 
 
@@ -188,18 +193,10 @@ def to_offer(result: gc.CheckResult, budget: dict[str, Any], terms: list[str]) -
         "within_budget": gc.meets_budget(record, budget) if gc.has_limits(budget) else None,
         "brand_score": brand_score,
         "brand_notes": brand_notes,
+        "buy_url": buy_url(result.domain),
     }
 
 
-def _registered_status(domains: list[str], config: dict[str, Any], cache: DomainCache, progress: Progress) -> dict[str, bool | None]:
-    """RDAP answers for every domain, in parallel. Cached answers are reused."""
-    status: dict[str, bool | None] = dict(cache.get_many("rdap", domains))
-    todo = [domain for domain in domains if domain not in status]
-    progress(total=len(domains), checked=len(status), stage="Checking for registered names")
-    fresh = gc.rdap_statuses(todo, config, on_progress=lambda done: progress(checked=len(status) + done))
-    status.update(fresh)
-    cache.put_many("rdap", {domain: value for domain, value in fresh.items() if value is not None})
-    return status
 
 
 def next_domains(request: SearchRequest, history: DomainHistory) -> tuple[str | None, list[str]]:
@@ -213,72 +210,110 @@ def next_domains(request: SearchRequest, history: DomainHistory) -> tuple[str | 
         if not unseen:
             raise SearchError("No new names are left for this keyword. Try a different keyword or extension.")
         chosen = unseen[: settings.CANDIDATES_PER_SEARCH * len(request.tlds)]
-        history.mark_seen(chosen, keyword=request.keyword.strip())
+        terms = tokenize_keywords(request.keyword)
+        scores = {domain: brand.score(domain.rsplit(".", 1)[0], terms) for domain in chosen}
+        history.mark_seen(chosen, keyword=request.keyword.strip(), brand=scores)
     return industry, chosen
 
 
+def _offers(results: list[gc.CheckResult], budget: dict[str, Any], terms: list[str]) -> list[dict[str, Any]]:
+    offers = [to_offer(result, budget, terms) for result in results if result.available is True]
+    # Names that break a limit go last; then the strongest brand names, then the cheapest.
+    offers.sort(key=lambda offer: (offer["within_budget"] is False, -offer["brand_score"], offer["price"] is None, offer["price"] or 0, offer["domain"]))
+    return offers
+
+
 def execute(request: SearchRequest, check_fn: CheckFn, progress: Progress,
-            cache: DomainCache | None = None, screen: trademark.TrademarkScreen | None = None,
-            history: DomainHistory | None = None) -> dict[str, Any]:
-    """Run one search end to end. `progress` receives keyword updates for the job record."""
+            screen: trademark.TrademarkScreen | None = None, history: DomainHistory | None = None,
+            should_stop: Callable[[], bool] | None = None) -> dict[str, Any]:
+    """Run one search. `progress` receives keyword updates for the job record, including the offers so far.
+
+    The search keeps checking rounds of new names until `should_stop()` returns True (the user pressed
+    Stop), the keyword runs out of names, GoDaddy fails a batch, or MAX_ROUNDS_PER_SEARCH is reached.
+    """
     config = gc.default_config()
-    cache = cache or DomainCache()
     screen = screen or trademark.NotConfiguredScreen()
     history = history or DomainHistory()
+    should_stop = should_stop or (lambda: False)
 
     pat = gc.load_pat()
     if not pat:
         raise SearchError("GoDaddy token is not configured. Set GODADDY_PAT in the environment or .env, then restart.")
 
-    industry, domains = next_domains(request, history)
-    answered: set[str] = set()  # names whose outcome is known: skipped, cached, or sent to GoDaddy
-    try:
-        progress(industry=industry, total=len(domains), checked=0)
-        registered = _registered_status(domains, config, cache, progress)
-        remaining = [domain for domain in domains if registered.get(domain) is not True]
-        remaining_set = set(remaining)
-        skipped_registered = len(domains) - len(remaining)
-        answered.update(domain for domain in domains if domain not in remaining_set)
-        # Registered names are taken; store that so they are never generated or checked again.
-        history.mark_checked({domain: False for domain in domains if domain not in remaining_set})
-
-        budget = budget_config(request)
-        known = cache.get_many("godaddy", remaining)
-        answered.update(known)
-        history.mark_checked({domain: {**record, "available": record.get("available") is True} for domain, record in known.items()})
-        # A name GoDaddy already answered is never sent again.
-        previously_checked = history.checked([domain for domain in remaining if domain not in known])
-        answered.update(previously_checked)
-        to_check = [domain for domain in remaining if domain not in known and domain not in previously_checked]
-        results = [gc.result_from_record(record) for record in known.values() if record.get("available") in {True, False}]
-        already = len(known)
-        progress(total=len(remaining), checked=already, skipped_registered=skipped_registered, stage="Checking availability with GoDaddy")
-
-        def on_batch(batch: list[str], batch_results: list[gc.CheckResult], error: str | None, checked: int) -> None:
-            answered.update(batch)
-            # Store each answer as it arrives, so a stopped run never re-sends what GoDaddy already answered.
-            history.mark_checked({result.domain: gc.answer_for(result) for result in batch_results})
-            progress(checked=already + checked)
-
-        fresh, failed = gc.check_in_batches(to_check, config, pat, check_fn, logger, on_batch)
-        results.extend(fresh)
-        cache.put_many("godaddy", {result.domain: gc.record_for_output(result) for result in fresh})
-    except BaseException:
-        # Names that were never answered can be tried again later.
-        history.release([domain for domain in domains if domain not in answered])
-        raise
-    # Names GoDaddy did not answer for can be tried again later.
-    history.release(failed)
-
+    budget = budget_config(request)
     terms = tokenize_keywords(request.keyword)
-    offers = [to_offer(result, budget, terms) for result in results if result.available is True]
-    offers = trademark.apply_screen(offers, screen)
-    # Names that break a limit go last; then the strongest brand names, then the cheapest.
-    offers.sort(key=lambda offer: (offer["within_budget"] is False, -offer["brand_score"], offer["price"] is None, offer["price"] or 0, offer["domain"]))
+    results: list[gc.CheckResult] = []
+    failed: list[str] = []
+    skipped_registered = 0
+    total = checked_before = 0
+    exhausted = stopped = False
+    industry: str | None = None
+    for round_number in range(1, settings.MAX_ROUNDS_PER_SEARCH + 1):
+        if should_stop():
+            stopped = True
+            break
+        try:
+            industry, domains = next_domains(request, history)
+        except SearchError:
+            if round_number == 1:
+                raise
+            exhausted = True
+            break
+        total += len(domains)
+        label = f" (round {round_number})" if round_number > 1 else ""
+        answered: set[str] = set()  # names whose outcome is known: registered, or answered by GoDaddy
+        round_results: list[gc.CheckResult] = []
+        try:
+            progress(industry=industry, total=total, checked=checked_before, stage=f"Checking for registered names{label}")
+            registered = gc.rdap_statuses(domains, config, on_progress=lambda done: progress(checked=checked_before + done))
+            taken = [domain for domain in domains if registered.get(domain) is True]
+            to_check = [domain for domain in domains if registered.get(domain) is not True]
+            skipped_registered += len(taken)
+            answered.update(taken)
+            # Registered names are taken; store that so they are never generated or checked again.
+            history.mark_checked({domain: False for domain in taken})
+            base = checked_before + len(taken)
+            progress(checked=base, skipped_registered=skipped_registered, stage=f"Checking availability with GoDaddy{label}")
+
+            def on_batch(batch: list[str], batch_results: list[gc.CheckResult], error: str | None, checked: int) -> None:
+                answered.update(batch)
+                # Store each answer as it arrives, so a stopped run never re-sends what GoDaddy already answered.
+                history.mark_checked({result.domain: gc.answer_for(result) for result in batch_results})
+                if not error:
+                    round_results.extend(batch_results)
+                # Show the names found so far, so the user can stop once they see the one they want.
+                progress(checked=base + checked, offers=_offers(results + round_results, budget, terms))
+                if should_stop():
+                    raise _StopRequested
+
+            fresh, round_failed = gc.check_in_batches(to_check, config, pat, check_fn, logger, on_batch)
+        except _StopRequested:
+            # Names that were never sent can be used by a later search.
+            history.release([domain for domain in domains if domain not in answered])
+            results.extend(round_results)
+            checked_before += len(answered)
+            stopped = True
+            break
+        except BaseException:
+            # Names that were never answered can be tried again later.
+            history.release([domain for domain in domains if domain not in answered])
+            raise
+        # Names GoDaddy did not answer for can be tried again later.
+        history.release(round_failed)
+        results.extend(fresh)
+        failed.extend(round_failed)
+        checked_before += len(domains)
+        if round_failed:
+            break  # GoDaddy is having trouble; released names would only come back in the next round
+
+    offers = trademark.apply_screen(_offers(results, budget, terms), screen)
     return {
         "offers": offers,
         "failed": failed,
         "skipped_registered": skipped_registered,
+        "names_checked": checked_before,
+        "names_exhausted": exhausted,
+        "stopped": stopped,
         "trademark_checked": not isinstance(screen, trademark.NotConfiguredScreen),
     }
 
@@ -364,6 +399,20 @@ class JobStore:
         with self._lock:
             return self._load(job_id)
 
+    def request_stop(self, job_id: str) -> bool:
+        """Ask a running search to stop after its current batch. False when it is not running."""
+        with self._lock:
+            job = self._load(job_id)
+            if job is None or job["status"] not in {"queued", "running"}:
+                return False
+            job["stop_requested"] = True
+            self._save(job)
+        return True
+
+    def stop_requested(self, job_id: str) -> bool:
+        job = self.get(job_id)
+        return bool(job and job.get("stop_requested"))
+
     def list_jobs(self, limit: int = 200) -> list[dict[str, Any]]:
         """Past searches, newest first, without their offers (summaries for the history page)."""
         db = self._connect()
@@ -382,6 +431,10 @@ class JobStore:
                 "tlds": job.get("tlds", []),
                 "created_at": job.get("created_at"),
                 "max_price": job.get("max_price"),
+                "stage": job.get("stage"),
+                "checked": job.get("checked", 0),
+                "total": job.get("total", 0),
+                "currency": next((offer.get("currency") for offer in offers if offer.get("currency")), settings.CURRENCY),
                 "available": len(offers),
                 "within_budget": sum(1 for offer in offers if offer.get("within_budget") is True),
                 "cheapest": min((offer["price"] for offer in offers if isinstance(offer.get("price"), (int, float))), default=None),
@@ -404,23 +457,57 @@ class JobStore:
             db.close()
 
 
-def domain_library(history: DomainHistory | None = None) -> list[dict[str, Any]]:
-    """Every domain the app has checked, with its price, extension and brand score."""
-    rows = (history or DomainHistory()).library()
-    for row in rows:
-        name, _, extension = row["domain"].rpartition(".")
-        terms = tokenize_keywords(row["keyword"] or "") or [name]
-        row["brand_score"], row["brand_notes"] = brand.score(name, terms)
-        row["tld"] = "." + extension
-    return rows
+def _with_details(row: dict[str, Any]) -> dict[str, Any]:
+    name, _, extension = row["domain"].rpartition(".")
+    if row.get("brand_score") is None:
+        # Domains recorded before brand scores were stored.
+        row["brand_score"], row["brand_notes"] = brand.score(name, tokenize_keywords(row.get("keyword") or "") or [name])
+    row["tld"] = "." + extension
+    row["buy_url"] = buy_url(row["domain"])
+    return row
+
+
+def buy_url(domain: str) -> str:
+    return settings.BUY_URL.format(domain=domain)
+
+
+def domain_library(history: DomainHistory | None = None, offset: int = 0,
+                   limit: int | None = None) -> dict[str, Any]:
+    """A page of the domains the app has checked, newest first, with price, extension and brand score."""
+    rows, total = (history or DomainHistory()).library(limit=limit or settings.DOMAINS_PAGE_SIZE, offset=offset)
+    return {"domains": [_with_details(row) for row in rows], "total": total, "offset": offset}
+
+
+def recheck(domains: list[str], check_fn: CheckFn = gc.check_batch, history: DomainHistory | None = None) -> list[dict[str, Any]]:
+    """Ask GoDaddy again about domains the user picked, store the new answers and return the updated rows.
+
+    This is the only way a domain is sent to GoDaddy a second time, and only on the user's request.
+    """
+    history = history or DomainHistory()
+    if len(domains) > settings.MAX_RECHECK_DOMAINS:
+        raise ValueError(f"Recheck at most {settings.MAX_RECHECK_DOMAINS} domains at a time")
+    known = set(history.checked(domains))
+    unknown = [domain for domain in domains if domain not in known]
+    if unknown:
+        raise ValueError(f"Only checked domains can be rechecked: {', '.join(unknown[:5])}")
+    pat = gc.load_pat()
+    if not pat:
+        raise SearchError("GoDaddy token is not configured. Set GODADDY_PAT in the environment or .env, then restart.")
+    results, failed = gc.check_in_batches(domains, gc.default_config(), pat, check_fn, logger)
+    history.mark_checked({result.domain: gc.answer_for(result) for result in results})
+    if failed:
+        raise SearchError(f"GoDaddy did not answer for {len(failed)} of the domains. Try again.")
+    rows, _ = history.library(domains=domains)
+    return [_with_details(row) for row in rows]
 
 
 def run_job(store: JobStore, job_id: str, request: SearchRequest, check_fn: CheckFn,
-            cache: DomainCache | None = None, screen: trademark.TrademarkScreen | None = None) -> None:
+            screen: trademark.TrademarkScreen | None = None) -> None:
     """Run a search and record its outcome. Every failure lands on the job, never on the thread."""
     store.update(job_id, status="running", stage="Starting")
     try:
-        outcome = execute(request, check_fn, lambda **fields: store.update(job_id, **fields), cache, screen)
+        outcome = execute(request, check_fn, lambda **fields: store.update(job_id, **fields), screen,
+                          should_stop=lambda: store.stop_requested(job_id))
     except (SearchError, gc.AuthError) as exc:
         store.update(job_id, status="failed", stage="Stopped", error=str(exc))
     except Exception:
@@ -430,10 +517,13 @@ def run_job(store: JobStore, job_id: str, request: SearchRequest, check_fn: Chec
         store.update(
             job_id,
             status="done",
-            stage="Finished",
+            stage="Stopped by you" if outcome["stopped"] else "Finished",
             offers=outcome["offers"],
             failed=outcome["failed"],
             skipped_registered=outcome["skipped_registered"],
+            names_checked=outcome["names_checked"],
+            names_exhausted=outcome["names_exhausted"],
+            stopped=outcome["stopped"],
             trademark_checked=outcome["trademark_checked"],
         )
 
@@ -442,7 +532,7 @@ _start_lock = threading.Lock()
 
 
 def start_search(store: JobStore, request: SearchRequest, check_fn: CheckFn = gc.check_batch,
-                 cache: DomainCache | None = None, screen: trademark.TrademarkScreen | None = None) -> str:
+                 screen: trademark.TrademarkScreen | None = None) -> str:
     """Check the limits, create the job and start it in a background thread."""
     with _start_lock:  # the limit check and the job creation must happen together
         if store.active_count() >= settings.MAX_CONCURRENT_SEARCHES:
@@ -450,5 +540,5 @@ def start_search(store: JobStore, request: SearchRequest, check_fn: CheckFn = gc
         if store.created_since(time.time() - 86400) >= settings.MAX_SEARCHES_PER_DAY:
             raise LimitError("The daily search limit has been reached. Try again tomorrow.")
         job_id = store.create(request)
-    threading.Thread(target=run_job, args=(store, job_id, request, check_fn, cache, screen), daemon=True).start()
+    threading.Thread(target=run_job, args=(store, job_id, request, check_fn, screen), daemon=True).start()
     return job_id

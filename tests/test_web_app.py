@@ -3,7 +3,6 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
-import cache as cache_module
 import godaddy_checker as gc
 import search_service as ss
 import settings
@@ -25,8 +24,7 @@ def client(monkeypatch, tmp_path):
     monkeypatch.setattr(gc, "load_pat", lambda: "token")
     monkeypatch.setattr(gc, "rdap_is_registered", lambda domain, config: None)
     store = ss.JobStore(tmp_path / "app.sqlite3")
-    cache = cache_module.DomainCache(tmp_path / "app.sqlite3")
-    app = web_app.create_app(check_fn=fake_check, store=store, cache=cache)
+    app = web_app.create_app(check_fn=fake_check, store=store)
     return TestClient(app, base_url=LOCAL)
 
 
@@ -48,7 +46,8 @@ def test_index_serves_the_page(client):
     assert "Run again" in response.text
     assert 'id="tab-history"' in response.text
     assert 'id="tab-domains"' in response.text
-    assert "Free only" in response.text
+    assert "Free first year" in response.text
+    assert "3-year cost" in response.text
 
 
 def test_config_lists_extensions_and_defaults(client):
@@ -151,3 +150,64 @@ def test_domains_lists_every_checked_domain_with_prices(client):
     assert row["brand_score"] == offer["brand_score"]
     taken = [row for row in body["domains"] if not row["available"]]
     assert all(row["price"] is None for row in taken)
+
+
+def test_domains_are_paged(client, monkeypatch):
+    monkeypatch.setattr(settings, "DOMAINS_PAGE_SIZE", 3)
+    job_id = client.post("/api/searches", json={"keyword": "real estate", "tlds": [".com"]}).json()["id"]
+    wait_for_job(client, job_id)
+    first = client.get("/api/domains").json()
+    second = client.get("/api/domains?offset=3").json()
+    assert first["total"] == second["total"] > 3
+    assert len(first["domains"]) == 3
+    assert {row["domain"] for row in first["domains"]}.isdisjoint(row["domain"] for row in second["domains"])
+    assert client.get("/api/domains?offset=-1").status_code == 422
+
+
+def test_shortlist_endpoints(client):
+    job_id = client.post("/api/searches", json={"keyword": "real estate", "tlds": [".com"]}).json()["id"]
+    domain = wait_for_job(client, job_id)["offers"][0]["domain"]
+    assert client.put(f"/api/shortlist/{domain}", json={"starred": True}).json() == {"domain": domain, "starred": True}
+    assert client.get("/api/shortlist").json() == {"domains": [domain]}
+    assert any(row["starred"] for row in client.get("/api/domains").json()["domains"] if row["domain"] == domain)
+    assert client.put("/api/shortlist/unknown.com", json={"starred": True}).status_code == 404
+    client.put(f"/api/shortlist/{domain}", json={"starred": False})
+    assert client.get("/api/shortlist").json() == {"domains": []}
+
+
+def test_recheck_endpoint(client):
+    job_id = client.post("/api/searches", json={"keyword": "real estate", "tlds": [".com"]}).json()["id"]
+    domain = wait_for_job(client, job_id)["offers"][0]["domain"]
+    body = client.post("/api/domains/recheck", json={"domains": [domain]}).json()
+    assert [row["domain"] for row in body["domains"]] == [domain]
+    assert body["domains"][0]["available"] is True
+    assert client.post("/api/domains/recheck", json={"domains": ["unknown.com"]}).status_code == 422
+    too_many = [f"n{i}.com" for i in range(settings.MAX_RECHECK_DOMAINS + 1)]
+    assert client.post("/api/domains/recheck", json={"domains": too_many}).status_code == 422
+
+
+def test_recheck_without_token_is_reported(client, monkeypatch):
+    job_id = client.post("/api/searches", json={"keyword": "real estate", "tlds": [".com"]}).json()["id"]
+    domain = wait_for_job(client, job_id)["offers"][0]["domain"]
+    monkeypatch.setattr(gc, "load_pat", lambda: None)
+    response = client.post("/api/domains/recheck", json={"domains": [domain]})
+    assert response.status_code == 503
+    assert "token" in response.json()["detail"]
+
+
+def test_history_summary_has_currency_and_progress(client):
+    job_id = client.post("/api/searches", json={"keyword": "real estate", "tlds": [".com"]}).json()["id"]
+    wait_for_job(client, job_id)
+    summary = client.get("/api/searches").json()["searches"][0]
+    assert summary["currency"] == "INR"
+    assert summary["stage"] == "Finished"
+    assert summary["checked"] == summary["total"] > 0
+
+
+def test_stop_endpoint(client):
+    assert client.post("/api/searches/unknown/stop").status_code == 404
+    job_id = client.post("/api/searches", json={"keyword": "real estate", "tlds": [".com"]}).json()["id"]
+    wait_for_job(client, job_id)
+    response = client.post(f"/api/searches/{job_id}/stop")
+    assert response.status_code == 409
+    assert "not running" in response.json()["detail"]

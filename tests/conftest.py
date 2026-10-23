@@ -18,3 +18,10 @@ def no_batch_delay(monkeypatch):
     """Tests never wait between GoDaddy batches."""
     import settings
     monkeypatch.setattr(settings, "DELAY_BETWEEN_BATCHES_SECONDS", 0)
+
+
+@pytest.fixture(autouse=True)
+def one_round_per_search(monkeypatch):
+    """A real search runs until stopped; tests run one round unless they test rounds."""
+    import settings
+    monkeypatch.setattr(settings, "MAX_ROUNDS_PER_SEARCH", 1)

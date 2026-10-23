@@ -8,15 +8,15 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
-import cache as cache_module
 import godaddy_checker as gc
 import search_service as ss
 import settings
 import trademark
+from history import DomainHistory
 
 STATIC_DIRECTORY = settings.ROOT / "static"
 
@@ -26,6 +26,14 @@ class SearchIn(BaseModel):
     tlds: list[str] = Field(min_length=1, max_length=len(settings.ALLOWED_TLDS))
     max_price: float | None = Field(default=None, ge=0, le=settings.MAX_PRICE_LIMIT)
     max_renewal_price: float | None = Field(default=None, ge=0, le=settings.MAX_PRICE_LIMIT)
+
+
+class RecheckIn(BaseModel):
+    domains: list[str] = Field(min_length=1, max_length=settings.MAX_RECHECK_DOMAINS)
+
+
+class StarIn(BaseModel):
+    starred: bool
 
 
 def _configure_search_log() -> None:
@@ -40,21 +48,15 @@ def _configure_search_log() -> None:
 
 
 def create_app(check_fn: ss.CheckFn = gc.check_batch, store: ss.JobStore | None = None,
-               cache: cache_module.DomainCache | None = None, screen: trademark.TrademarkScreen | None = None,
-               static_dir: Path = STATIC_DIRECTORY) -> FastAPI:
+               screen: trademark.TrademarkScreen | None = None, static_dir: Path = STATIC_DIRECTORY) -> FastAPI:
     app = FastAPI(title="Domain Search")
-    holder: dict[str, object] = {"store": store, "cache": cache}
+    holder: dict[str, object] = {"store": store}
 
     def job_store() -> ss.JobStore:
         # Created on first use, so importing this module does not touch the database.
         if holder["store"] is None:
             holder["store"] = ss.JobStore()
         return holder["store"]  # type: ignore[return-value]
-
-    def domain_cache() -> cache_module.DomainCache:
-        if holder["cache"] is None:
-            holder["cache"] = cache_module.DomainCache()
-        return holder["cache"]  # type: ignore[return-value]
 
     @app.middleware("http")
     async def local_requests_only(request: Request, call_next):
@@ -78,6 +80,8 @@ def create_app(check_fn: ss.CheckFn = gc.check_batch, store: ss.JobStore | None 
             "default_max_price": settings.DEFAULT_MAX_PRICE,
             "currency": settings.CURRENCY,
             "trademark_checked": False,
+            "max_recheck": settings.MAX_RECHECK_DOMAINS,
+            "job_retention_days": settings.JOB_RETENTION_DAYS,
         }
 
     @app.post("/api/searches", status_code=202)
@@ -93,7 +97,7 @@ def create_app(check_fn: ss.CheckFn = gc.check_batch, store: ss.JobStore | None 
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         try:
-            job_id = ss.start_search(job_store(), request, check_fn, domain_cache(), screen)
+            job_id = ss.start_search(job_store(), request, check_fn, screen)
         except ss.LimitError as exc:
             raise HTTPException(status_code=429, detail=str(exc)) from exc
         return {"id": job_id}
@@ -103,8 +107,38 @@ def create_app(check_fn: ss.CheckFn = gc.check_batch, store: ss.JobStore | None 
         return {"searches": job_store().list_jobs()}
 
     @app.get("/api/domains")
-    def list_domains() -> dict[str, object]:
-        return {"domains": ss.domain_library(), "currency": settings.CURRENCY}
+    def list_domains(offset: int = Query(default=0, ge=0)) -> dict[str, object]:
+        return {**ss.domain_library(offset=offset), "page_size": settings.DOMAINS_PAGE_SIZE, "currency": settings.CURRENCY}
+
+    @app.post("/api/domains/recheck")
+    def recheck_domains(body: RecheckIn) -> dict[str, object]:
+        """Send the chosen domains to GoDaddy again. Only runs when the user asks for it."""
+        domains = [domain.strip().lower() for domain in body.domains]
+        try:
+            return {"domains": ss.recheck(domains, check_fn)}
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except (ss.SearchError, gc.AuthError) as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @app.get("/api/shortlist")
+    def shortlist() -> dict[str, object]:
+        return {"domains": DomainHistory().starred()}
+
+    @app.put("/api/shortlist/{domain}")
+    def set_shortlist(domain: str, body: StarIn) -> dict[str, object]:
+        if not DomainHistory().set_starred(domain.lower(), body.starred):
+            raise HTTPException(status_code=404, detail="Unknown domain")
+        return {"domain": domain.lower(), "starred": body.starred}
+
+    @app.post("/api/searches/{job_id}/stop", status_code=202)
+    def stop_search(job_id: str) -> dict[str, object]:
+        """Stop a running search after its current batch. The names found so far are kept."""
+        if job_store().get(job_id) is None:
+            raise HTTPException(status_code=404, detail="Unknown search")
+        if not job_store().request_stop(job_id):
+            raise HTTPException(status_code=409, detail="This search is not running")
+        return {"id": job_id, "stop_requested": True}
 
     @app.get("/api/searches/{job_id}")
     def get_search(job_id: str) -> dict[str, object]:

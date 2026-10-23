@@ -32,22 +32,29 @@ For each search the app:
 2. Adds industry words when the keyword matches a known industry (real estate, proptech, technology, finance).
 3. Combines each name with the extensions you picked.
 4. Skips names the free RDAP registry reports as registered.
-5. Checks the rest with GoDaddy in batches of 25.
-6. Lists the available names, in-budget ones first and the strongest brand names next, with the first-year and renewal price.
+5. Checks the rest with GoDaddy in batches of 25, 50 names per extension at a time.
+6. Shows each available name as soon as GoDaddy answers, in-budget ones first and the strongest brand names next, with the first-year and renewal price.
+7. Keeps going with new names until you press **Stop searching** or the keyword runs out of names. Stop when you see the domain you want: the names found so far are kept, and names that were not checked yet stay available for a later search. (A search left running stops on its own after 5,000 names per extension, to protect your GoDaddy quota.)
 
-**Brand score.** Every name gets a score from 0 to 100 for how well it works as a brand, with the reasons shown next to it. Names lose points for being long, for sounds that are hard to say (such as four consonants in a row), for many syllables, for stacked add-ons (`automationplusnow`), and for filler words such as "world" or "online". Names below 60 are not shown. Short keywords keep thousands of names; long keywords such as "automation" keep about 100, because most longer combinations score too low.
+**Brand score.** Every name gets a score from 0 to 100 for how well it works as a brand, with the reasons shown next to it. Names lose points for being long, for sounds that are hard to say (such as four consonants in a row), for many syllables, for stacked add-ons (`automationplusnow`), and for filler words such as "world" or "online". Names below 60 are not shown. Names with one add-on (`taghub`, `gettag`) are always used before names with two (`gettaghub`), so stacked names only appear once the simpler ones run out. Short keywords such as "tag" have over 4,000 names; long keywords such as "automation" have about 160, because most longer combinations score too low.
 
 Results are kept in `output/app.sqlite3`, so a finished search is still there after a restart.
 
 **Reviewing results.** The page has three tabs:
 
 - **Search** runs a search and shows its available domains.
-- **History** lists every search you have run, repeats included, with how many names were available, how many were within budget, and the cheapest price. Open a past search to see its domains again.
-- **All domains** lists every domain the app has checked, available or taken, with the keyword it came from, the first-year and renewal price, the brand score, and when it was checked.
+- **History** lists every search you have run, repeats included, with how many names were available, how many were within budget, and the cheapest price. A running search shows its progress. Open a past search to see its domains again. Searches stay in History for a year.
+- **All domains** lists every domain the app has checked, available or taken, with the keyword it came from, the prices, the brand score, and when it was checked. It loads the newest 1,000 first; **Load more** fetches the next 1,000.
 
-Every results table has the same filters: price (any, free only, or under an amount), extension, minimum brand score, a name search, and sort order (cheapest, best brand, name, or newest). **All domains** can also include taken names. **Export CSV** downloads the rows that match the filters.
+Every results table shows the first-year price, the renewal price, and the **3-year cost** (first year plus two renewals), which shows when a cheap first year hides an expensive renewal. Each table has the same filters: price (any, free first year, first year under an amount, or 3-year cost under an amount), extension, minimum brand score, a name search, starred only, and sort order (cheapest first year, lowest 3-year cost, best brand, name, or newest). The page remembers your filter choices. **Export CSV** downloads the rows that match the filters.
 
-**Every name is unique, and checked only once.** Each name the app generates is recorded in `output/app.sqlite3`, and a later search or generator run never produces it again. When GoDaddy answers for a name, available or taken, the answer is stored with it, and that name is never sent to GoDaddy again: not by a later web search, and not by the command-line checker. The checker reports such names with the reason `CHECKED_EARLIER` and the stored answer. A name is released only when it was generated but never answered (the check failed or the run stopped), so it can be tried later. Each keyword has a finite set of names that pass the brand score (about 100 for a long keyword like "automation", over 1,000 for a short one like "tag"). When they are all used, the search says that no new names are left. Use a different keyword or extension to continue.
+On every row:
+
+- **☆** adds the domain to your shortlist. Use **Starred only** to compare your shortlist across searches.
+- **Buy ↗** opens the domain on GoDaddy.
+- **Recheck** (All domains only) asks GoDaddy again for the domain's current availability and price, and stores the new answer. This is the only way a domain is sent to GoDaddy a second time, and it only happens when you click it.
+
+**Every name is unique, and checked only once.** Each name the app generates is recorded in `output/app.sqlite3`, and a later search or generator run never produces it again. When GoDaddy answers for a name, available or taken, the answer is stored with it, and that name is never sent to GoDaddy again: not by a later web search, and not by the command-line checker. The checker reports such names with the reason `CHECKED_EARLIER` and the stored answer. A name is released only when it was generated but never answered (the check failed or the run stopped), so it can be tried later. Each keyword has a finite set of names that pass the brand score (about 160 for a long keyword like "automation", over 4,000 for a short one like "tag"). When they are all used, the search says that no new names are left. Use a different keyword or extension to continue.
 
 ## Command line
 
