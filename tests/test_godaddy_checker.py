@@ -1,4 +1,5 @@
 import logging
+import time
 import os
 
 import pytest
@@ -268,3 +269,25 @@ def test_answer_for_keeps_prices_only_for_available_names():
     taken = gc.CheckResult(domain="b.com", available=False, price=1200, renewal_price=999, currency="INR", api_success=True)
     assert gc.answer_for(available) == {"available": True, "price": 0, "renewal_price": 999, "currency": "INR"}
     assert gc.answer_for(taken) == {"available": False}
+
+
+def test_request_pacer_spaces_requests_across_threads(monkeypatch):
+    import threading
+    monkeypatch.setattr(settings, "GODADDY_REQUESTS_PER_MINUTE", 1200)  # one request every 0.05 s
+    pacer = gc.RequestPacer()
+    times = []
+    lock = threading.Lock()
+
+    def request():
+        pacer.wait()
+        with lock:
+            times.append(time.monotonic())
+
+    threads = [threading.Thread(target=request) for _ in range(6)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    times.sort()
+    gaps = [later - earlier for earlier, later in zip(times, times[1:])]
+    assert min(gaps) >= 0.045

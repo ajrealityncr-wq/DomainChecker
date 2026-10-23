@@ -1,0 +1,9 @@
+.env
+.git
+.github
+.venv
+output
+tests
+__pycache__
+*.json
+Prompts

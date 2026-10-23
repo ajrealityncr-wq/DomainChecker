@@ -269,14 +269,21 @@ def test_jobs_survive_a_restart(online, tmp_path):
     assert ss.JobStore(path).get(job_id)["status"] == "done"
 
 
-def test_a_job_running_at_shutdown_is_marked_failed_on_restart(tmp_path):
+def test_a_search_interrupted_by_a_restart_keeps_its_results_and_releases_unanswered_names(tmp_path):
     path = tmp_path / "app.sqlite3"
     first = ss.JobStore(path)
-    job_id = first.create(ss.SearchRequest(keyword="real estate", tlds=(".com",)))
-    first.update(job_id, status="running")
-    recovered = ss.JobStore(path).get(job_id)
-    assert recovered["status"] == "failed"
-    assert "stopped" in recovered["error"]
+    request = ss.SearchRequest(keyword="real estate", tlds=(".com",))
+    job_id = first.create(request)
+    history = DomainHistory(path)
+    _, reserved = ss.next_domains(request, history)
+    history.mark_checked({reserved[0]: {"available": True, "price": 500, "currency": "INR"}})
+    first.update(job_id, status="running", checked=1, offers=[{"domain": reserved[0], "price": 500}])
+
+    recovered = ss.JobStore(path).get(job_id)  # the server starts again
+    assert recovered["status"] == "done"
+    assert recovered["interrupted"] is True
+    assert recovered["offers"] == [{"domain": reserved[0], "price": 500}]
+    assert history.unseen(reserved) == reserved[1:]  # unanswered names are back in the pool
 
 
 def test_old_jobs_are_removed(tmp_path, monkeypatch):
@@ -558,3 +565,60 @@ def test_job_stopped_by_the_user_is_done_with_its_names(online, store, monkeypat
     assert job["stopped"] is True
     assert len(job["offers"]) == settings.BATCH_SIZE
     assert store.request_stop(job_id) is False  # a finished search cannot be stopped
+
+
+def test_exhausted_keyword_suggests_related_keywords_and_other_extensions(tmp_path, monkeypatch):
+    history = DomainHistory(tmp_path / "h.sqlite3")
+    request = ss.SearchRequest(keyword="automation", tlds=(".com",))
+    _, domains = ss.plan_domains(request)
+    history.mark_seen(domains)
+    with pytest.raises(ss.ExhaustedError) as caught:
+        ss.next_domains(request, history)
+    suggestions = caught.value.suggestions
+    assert suggestions["keywords"][:2] == ["autopilot", "workflow"]
+    assert ".in" in suggestions["extensions"] and ".com" not in suggestions["extensions"]
+
+
+def test_suggestions_skip_keywords_that_are_used_up_or_not_allowed(tmp_path, monkeypatch):
+    monkeypatch.setitem(settings.RELATED_KEYWORDS, "automation", ("code", "autopilot", "x"))
+    history = DomainHistory(tmp_path / "h.sqlite3")
+    history.mark_seen(ss.plan_domains(ss.SearchRequest(keyword="autopilot", tlds=(".com",)))[1])
+    suggestions = ss.keyword_suggestions(ss.SearchRequest(keyword="automation", tlds=(".com",)), history)
+    assert "code" not in suggestions["keywords"]  # blocked keyword
+    assert "autopilot" not in suggestions["keywords"]  # no names left
+    assert "x" not in suggestions["keywords"]  # too short
+
+
+def test_search_that_runs_out_reports_suggestions(online, monkeypatch):
+    monkeypatch.setattr(settings, "MAX_ROUNDS_PER_SEARCH", 100)
+    monkeypatch.setattr(settings, "CANDIDATE_POOL_PER_KEYWORD", 60)
+    outcome = ss.execute(ss.SearchRequest(keyword="tag", tlds=(".com",)), counting_check(available_every=2), lambda **fields: None)
+    assert outcome["names_exhausted"] is True
+    assert outcome["suggestions"]["keywords"] == ["label", "tagger", "badge", "mark"]
+
+
+def test_job_for_a_used_up_keyword_fails_with_suggestions(online, store, monkeypatch):
+    request = ss.SearchRequest(keyword="automation", tlds=(".com",))
+    DomainHistory().mark_seen(ss.plan_domains(request)[1])
+    job_id = store.create(request)
+    ss.run_job(store, job_id, request, fake_check())
+    job = store.get(job_id)
+    assert job["status"] == "failed"
+    assert job["suggestions"]["keywords"]
+
+
+def test_deleting_a_search_keeps_its_domains(online, store):
+    request = ss.SearchRequest(keyword="real estate", tlds=(".com",))
+    job_id = store.create(request)
+    ss.run_job(store, job_id, request, fake_check("real"))
+    checked_before = DomainHistory().library()[1]
+    assert store.delete(job_id) == "deleted"
+    assert store.get(job_id) is None
+    assert store.delete(job_id) == "missing"
+    assert DomainHistory().library()[1] == checked_before
+
+
+def test_running_search_cannot_be_deleted(store):
+    job_id = store.create(ss.SearchRequest(keyword="real estate", tlds=(".com",)))
+    store.update(job_id, status="running")
+    assert store.delete(job_id) == "running"
