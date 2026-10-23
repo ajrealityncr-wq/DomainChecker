@@ -132,7 +132,7 @@
       </label>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>When</th><th>Keyword</th><th>Extensions</th><th class="num">Available</th><th class="num">Within budget</th><th class="num">Cheapest</th><th>Status</th><th></th></tr></thead>
+          <thead><tr><th>When</th><th>Keyword</th><th>Extensions</th><th class="num">Available</th><th class="num">Not available</th><th class="num">Within budget</th><th class="num">Cheapest</th><th>Status</th><th></th></tr></thead>
           <tbody id="history-rows"></tbody>
         </table>
       </div>
@@ -212,7 +212,7 @@
 
   // ---------- results panel: filters, sort, table, export ----------
   // Used by Search, History and All domains, so results look and filter the same everywhere.
-  function createResultsPanel(container, { storageKey, showTaken = false, showKeyword = false, showChecked = false, onRecheck = null } = {}) {
+  function createResultsPanel(container, { storageKey, showKeyword = false, showChecked = false, onRecheck = null } = {}) {
     let rows = [];
     const saved = loadSaved(storageKey);
     const priceMode = el("select", {},
@@ -230,7 +230,11 @@
       el("option", { value: "brand", textContent: "Best brand first" }),
       el("option", { value: "name", textContent: "Name A–Z" }),
       ...(showChecked ? [el("option", { value: "newest", textContent: "Newest first" })] : []));
-    const includeTaken = el("input", { type: "checkbox" });
+    // Every generated name is listed; this picks which ones to show.
+    const availability = el("select", {},
+      el("option", { value: "all", textContent: "All checked names" }),
+      el("option", { value: "available", textContent: "Available only" }),
+      el("option", { value: "taken", textContent: "Not available only" }));
     const starredOnly = el("input", { type: "checkbox" });
     const count = el("span", { className: "count" });
     const exportButton = el("button", { type: "button", className: "secondary", textContent: "Export CSV" });
@@ -241,7 +245,7 @@
     priceMax.value = saved.priceMax ?? "";
     minScore.value = saved.minScore ?? "0";
     if (saved.sort && [...sort.options].some(o => o.value === saved.sort)) sort.value = saved.sort;
-    includeTaken.checked = Boolean(saved.includeTaken);
+    availability.value = saved.availability || "all";
     starredOnly.checked = Boolean(saved.starredOnly);
     priceMax.disabled = !["under", "total"].includes(priceMode.value);
 
@@ -256,19 +260,20 @@
     const table = el("div", { className: "table-wrap" }, el("table", {}, el("thead", {}, head), body));
     const bar = el("div", { className: "actions", style: "margin-bottom:8px" },
       el("label", { className: "inline" }, starredOnly, "Starred only"), count, exportButton);
-    if (showTaken) bar.prepend(el("label", { className: "inline" }, includeTaken, "Include taken"));
+    bar.prepend(el("label", { className: "inline" }, "Show", availability));
     container.replaceChildren(filters, bar, table);
 
     function remember() {
       save(storageKey, { priceMode: priceMode.value, priceMax: priceMax.value, minScore: minScore.value, sort: sort.value,
-        includeTaken: includeTaken.checked, starredOnly: starredOnly.checked });
+        availability: availability.value, starredOnly: starredOnly.checked });
     }
 
     function visible() {
       const needle = text.value.trim().toLowerCase();
       const limit = priceMax.value === "" ? null : Number(priceMax.value);
       const list = rows.filter(row => {
-        if (!includeTaken.checked && row.available === false) return false;
+        if (availability.value === "available" && row.available === false) return false;
+        if (availability.value === "taken" && row.available !== false) return false;
         if (starredOnly.checked && !shortlist.has(row.domain)) return false;
         if (tld.value && row.tld !== tld.value) return false;
         if ((row.brand_score ?? 0) < Number(minScore.value)) return false;
@@ -281,10 +286,12 @@
       const byPrice = (a, b) => (a.price ?? Infinity) - (b.price ?? Infinity);
       const byTotal = (a, b) => (threeYear(a) ?? Infinity) - (threeYear(b) ?? Infinity);
       const byBrand = (a, b) => (b.brand_score ?? 0) - (a.brand_score ?? 0);
+      // Available names come before names that are not available.
+      const byAvailable = (a, b) => (a.available === false) - (b.available === false);
       const sorters = {
-        price: (a, b) => byPrice(a, b) || byBrand(a, b) || a.domain.localeCompare(b.domain),
-        total: (a, b) => byTotal(a, b) || byBrand(a, b) || a.domain.localeCompare(b.domain),
-        brand: (a, b) => byBrand(a, b) || byPrice(a, b) || a.domain.localeCompare(b.domain),
+        price: (a, b) => byAvailable(a, b) || byPrice(a, b) || byBrand(a, b) || a.domain.localeCompare(b.domain),
+        total: (a, b) => byAvailable(a, b) || byTotal(a, b) || byBrand(a, b) || a.domain.localeCompare(b.domain),
+        brand: (a, b) => byAvailable(a, b) || byBrand(a, b) || byPrice(a, b) || a.domain.localeCompare(b.domain),
         name: (a, b) => a.domain.localeCompare(b.domain),
         newest: (a, b) => (b.checked_at ?? 0) - (a.checked_at ?? 0),
       };
@@ -294,7 +301,7 @@
     function statusCell(row) {
       const td = el("td");
       if (row.available === false) {
-        td.append(tag("taken", "out"));
+        td.append(tag(row.reason === "registered" ? "not available · registered" : "not available", "out"));
         // A starred name that is taken may come free again; Recheck asks GoDaddy.
         if (shortlist.has(row.domain)) td.append(tag(onRecheck ? "starred · recheck later" : "starred", "warn"));
         return td;
@@ -347,7 +354,8 @@
         ...(showChecked ? [el("td", { className: "col-checked", textContent: when(row.checked_at) })] : []),
         actionsCell(row),
       )));
-      count.textContent = `Showing ${list.length} of ${rows.length}`;
+      const free = rows.filter(row => row.available !== false).length;
+      count.textContent = `Showing ${list.length} of ${rows.length} (${free} available, ${rows.length - free} not available)`;
     }
 
     function exportCsv() {
@@ -364,7 +372,7 @@
     }
 
     priceMode.addEventListener("change", () => { priceMax.disabled = !["under", "total"].includes(priceMode.value); render(); });
-    for (const input of [priceMode, priceMax, tld, minScore, text, sort, includeTaken, starredOnly]) {
+    for (const input of [priceMode, priceMax, tld, minScore, text, sort, availability, starredOnly]) {
       input.addEventListener("input", () => { render(); remember(); });
     }
     exportButton.addEventListener("click", exportCsv);
@@ -394,7 +402,7 @@
   const searchPanel = createResultsPanel(document.querySelector("#search-results .results-panel"), { storageKey: "filters-search" });
   const historyPanel = createResultsPanel(document.querySelector("#history-results .results-panel"), { storageKey: "filters-history" });
   const domainsPanel = createResultsPanel(document.querySelector("#view-domains .results-panel"), {
-    storageKey: "filters-domains", showTaken: true, showKeyword: true, showChecked: true, onRecheck: recheck,
+    storageKey: "filters-domains", showKeyword: true, showChecked: true, onRecheck: recheck,
   });
 
   // ---------- tabs ----------
@@ -436,8 +444,16 @@
   }
   function withinBudget(job) { return job.offers.filter(offer => offer.within_budget === true).length; }
   function foundText(job) {
-    const found = `${job.offers.length} available`;
-    return job.max_price !== null || job.max_renewal_price !== null ? `${found}, ${withinBudget(job)} within budget` : found;
+    let found = `${job.offers.length} available`;
+    if (job.max_price !== null || job.max_renewal_price !== null) found += ` (${withinBudget(job)} within budget)`;
+    return `${found}, ${(job.taken || []).length} not available`;
+  }
+  // Every name the search generated and checked: the available ones and the ones that are not.
+  function checkedNames(job) {
+    return [
+      ...job.offers.map(offer => ({ ...offer, available: true, keyword: job.keyword })),
+      ...(job.taken || []).map(name => ({ ...name, keyword: job.keyword })),
+    ];
   }
   function doneText(job) {
     const outcome = job.interrupted ? "Interrupted by a server restart" : job.stopped ? "Stopped" : "Done";
@@ -447,10 +463,11 @@
   }
   function showOffers(job) {
     // Rows are only rebuilt when new names arrive, so filters and scrolling stay put.
-    if (job.offers.length === shownOffers) return;
-    shownOffers = job.offers.length;
-    searchPanel.setRows(job.offers.map(offer => ({ ...offer, available: true, keyword: job.keyword })));
-    resultsCard.classList.toggle("hidden", job.offers.length === 0);
+    const names = checkedNames(job);
+    if (names.length === shownOffers) return;
+    shownOffers = names.length;
+    searchPanel.setRows(names);
+    resultsCard.classList.toggle("hidden", names.length === 0);
   }
 
   // When a keyword runs out of names: one-click searches for related keywords or other extensions.
@@ -620,6 +637,7 @@
         el("td", { textContent: search.keyword }),
         el("td", { textContent: search.tlds.join(" ") }),
         el("td", { className: "num", textContent: search.available }),
+        el("td", { className: "num", textContent: search.taken ?? 0 }),
         el("td", { className: "num", textContent: search.max_price === null ? "—" : search.within_budget }),
         el("td", { className: "num", textContent: money(search.cheapest, search.currency) }),
         historyStatus(search),
@@ -632,7 +650,7 @@
     const job = await response.json();
     const live = job.status === "running" ? " · still running, found so far" : "";
     document.getElementById("history-results-title").textContent = `"${job.keyword}" · ${when(job.created_at)}${live}`;
-    historyPanel.setRows(job.offers.map(offer => ({ ...offer, available: true, keyword: job.keyword })));
+    historyPanel.setRows(checkedNames(job));
     document.getElementById("history-results").classList.remove("hidden");
   }
 

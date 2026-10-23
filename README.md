@@ -46,7 +46,7 @@ For each search the app:
 3. Combines each name with the extensions you picked.
 4. Skips names the free RDAP registry reports as registered.
 5. Checks the rest with GoDaddy in batches of 25, 50 names per extension at a time.
-6. Shows each available name as soon as GoDaddy answers, in-budget ones first and the strongest brand names next, with the first-year and renewal price.
+6. Lists every name it generated and checked as soon as GoDaddy answers: **available** names first (in-budget ones first, then the strongest brand names, with the first-year and renewal price), then the names that are **not available** (taken, or reported as registered).
 7. Keeps going with new names until you press **Stop searching** or the keyword runs out of names. Stop when you see the domain you want: the names found so far are kept, and names that were not checked yet stay available for a later search. (A search left running stops on its own after 5,000 names per extension, to protect your GoDaddy quota.)
 
 **Brand score.** Every name gets a score from 0 to 100 for how well it works as a brand, with the reasons shown next to it. Names lose points for being long, for sounds that are hard to say (such as four consonants in a row), for many syllables, for stacked add-ons (`automationplusnow`), and for filler words such as "world" or "online". Names below 60 are not shown. Names with one add-on (`taghub`, `gettag`) are always used before names with two (`gettaghub`), so stacked names only appear once the simpler ones run out. Short keywords such as "tag" have over 4,000 names; long keywords such as "automation" have about 160, because most longer combinations score too low.
@@ -59,11 +59,11 @@ Results are kept in `output/app.sqlite3`, so a finished search is still there af
 
 **Reviewing results.** The page has three tabs:
 
-- **Search** runs a search and shows its available domains.
-- **History** lists every search you have run, repeats included, with how many names were available, how many were within budget, and the cheapest price. A running search shows its progress. Open a past search to see its domains again, find one by keyword, or delete it (its domains stay in All domains). Searches stay in History for a year.
+- **Search** runs a search and shows every name it generated and checked, available or not.
+- **History** lists every search you have run, repeats included, with how many names were available, how many were not available, how many were within budget, and the cheapest price. A running search shows its progress. Open a past search to see its domains again, find one by keyword, or delete it (its domains stay in All domains). Searches stay in History for a year.
 - **All domains** lists every domain the app has checked, available or taken, with the keyword it came from, the prices, the brand score, and when it was checked. It loads the newest 1,000 first; **Load more** fetches the next 1,000.
 
-Every results table shows the first-year price, the renewal price, and the **3-year cost** (first year plus two renewals), which shows when a cheap first year hides an expensive renewal. Each table has the same filters: price (any, free first year, first year under an amount, or 3-year cost under an amount), extension, minimum brand score, a name search, starred only, and sort order (cheapest first year, lowest 3-year cost, best brand, name, or newest). The page remembers your filter choices. **Export CSV** downloads the rows that match the filters.
+Every results table shows the first-year price, the renewal price, and the **3-year cost** (first year plus two renewals), which shows when a cheap first year hides an expensive renewal. Each table has the same filters: **Show** (all checked names, available only, or not available only), price (any, free first year, first year under an amount, or 3-year cost under an amount), extension, minimum brand score, a name search, starred only, and sort order (cheapest first year, lowest 3-year cost, best brand, name, or newest). The page remembers your filter choices. **Export CSV** downloads the rows that match the filters.
 
 On every row:
 

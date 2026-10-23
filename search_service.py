@@ -189,6 +189,12 @@ def budget_config(request: SearchRequest) -> dict[str, Any]:
     }
 
 
+def to_taken(domain: str, terms: list[str], reason: str) -> dict[str, Any]:
+    """A generated name that is not available, shown in the results next to the available ones."""
+    brand_score, brand_notes = brand.score(domain.rsplit(".", 1)[0], terms)
+    return {"domain": domain, "available": False, "reason": reason, "brand_score": brand_score, "brand_notes": brand_notes}
+
+
 def to_offer(result: gc.CheckResult, budget: dict[str, Any], terms: list[str]) -> dict[str, Any]:
     record = {"price": result.price, "currency": result.currency, "renewal_price": result.renewal_price}
     brand_score, brand_notes = brand.score(result.domain.rsplit(".", 1)[0], terms)
@@ -286,6 +292,7 @@ def execute(request: SearchRequest, check_fn: CheckFn, progress: Progress,
     terms = tokenize_keywords(request.keyword)
     plan = plan_domains(request)  # built once; every round takes the next unused names from it
     offers: list[dict[str, Any]] = []  # each available result is scored once, as it arrives
+    taken_names: list[dict[str, Any]] = []  # every generated name that is not available, and why
     failed: list[str] = []
     skipped_registered = 0
     total = checked_before = 0
@@ -316,8 +323,10 @@ def execute(request: SearchRequest, check_fn: CheckFn, progress: Progress,
             answered.update(taken)
             # Registered names are taken; store that so they are never generated or checked again.
             history.mark_checked({domain: False for domain in taken})
+            taken_names.extend(to_taken(domain, terms, "registered") for domain in taken)
             base = checked_before + len(taken)
-            progress(checked=base, skipped_registered=skipped_registered, stage=f"Checking availability with GoDaddy{label}")
+            progress(checked=base, skipped_registered=skipped_registered, taken=taken_names,
+                     stage=f"Checking availability with GoDaddy{label}")
 
             def on_batch(batch: list[str], batch_results: list[gc.CheckResult], error: str | None, checked: int) -> None:
                 answered.update(batch)
@@ -325,8 +334,9 @@ def execute(request: SearchRequest, check_fn: CheckFn, progress: Progress,
                 history.mark_checked({result.domain: gc.answer_for(result) for result in batch_results})
                 if not error:
                     offers.extend(to_offer(result, budget, terms) for result in batch_results if result.available is True)
+                    taken_names.extend(to_taken(result.domain, terms, "taken") for result in batch_results if result.available is not True)
                 # Show the names found so far, so the user can stop once they see the one they want.
-                progress(checked=base + checked, offers=_sorted_offers(offers))
+                progress(checked=base + checked, offers=_sorted_offers(offers), taken=taken_names)
                 if should_stop():
                     raise _StopRequested
 
@@ -350,6 +360,7 @@ def execute(request: SearchRequest, check_fn: CheckFn, progress: Progress,
 
     return {
         "offers": trademark.apply_screen(_sorted_offers(offers), screen),
+        "taken": sorted(taken_names, key=lambda name: (-name["brand_score"], name["domain"])),
         "failed": failed,
         "skipped_registered": skipped_registered,
         "names_checked": checked_before,
@@ -428,6 +439,7 @@ class JobStore:
             "skipped_registered": 0,
             "trademark_checked": False,
             "offers": [],
+            "taken": [],
             "failed": [],
             "error": None,
         }
@@ -501,6 +513,7 @@ class JobStore:
                 "total": job.get("total", 0),
                 "currency": next((offer.get("currency") for offer in offers if offer.get("currency")), settings.CURRENCY),
                 "available": len(offers),
+                "taken": len(job.get("taken", [])),
                 "within_budget": sum(1 for offer in offers if offer.get("within_budget") is True),
                 "cheapest": min((offer["price"] for offer in offers if isinstance(offer.get("price"), (int, float))), default=None),
                 "error": job.get("error"),
@@ -617,6 +630,7 @@ def run_job(store: JobStore, job_id: str, request: SearchRequest, check_fn: Chec
             status="done",
             stage="Stopped by you" if outcome["stopped"] else "Finished",
             offers=outcome["offers"],
+            taken=outcome["taken"],
             failed=outcome["failed"],
             skipped_registered=outcome["skipped_registered"],
             names_checked=outcome["names_checked"],
