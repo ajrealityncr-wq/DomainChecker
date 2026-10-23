@@ -622,3 +622,34 @@ def test_running_search_cannot_be_deleted(store):
     job_id = store.create(ss.SearchRequest(keyword="real estate", tlds=(".com",)))
     store.update(job_id, status="running")
     assert store.delete(job_id) == "running"
+
+
+def test_search_lists_every_checked_name_as_available_or_not(online, monkeypatch):
+    registered = set()
+
+    def rdap(domain, config):
+        if len(registered) < 5 and domain not in registered:
+            registered.add(domain)
+            return True
+        return domain in registered and None
+
+    monkeypatch.setattr(gc, "rdap_is_registered", rdap)
+    outcome = ss.execute(ss.SearchRequest(keyword="tag", tlds=(".com",)), counting_check(available_every=3), lambda **fields: None)
+    available = {offer["domain"] for offer in outcome["offers"]}
+    taken = {name["domain"]: name for name in outcome["taken"]}
+    assert available and taken
+    assert available.isdisjoint(taken)
+    assert len(available) + len(taken) == outcome["names_checked"]  # nothing generated is hidden
+    assert {taken[domain]["reason"] for domain in registered} == {"registered"}
+    assert "taken" in {name["reason"] for name in taken.values()}
+    assert all(name["available"] is False and isinstance(name["brand_score"], int) for name in taken.values())
+
+
+def test_history_summary_counts_names_that_are_not_available(online, store):
+    request = ss.SearchRequest(keyword="real estate", tlds=(".com",))
+    job_id = store.create(request)
+    ss.run_job(store, job_id, request, fake_check("real"))
+    job = store.get(job_id)
+    summary = store.list_jobs()[0]
+    assert summary["taken"] == len(job["taken"]) > 0
+    assert summary["available"] == len(job["offers"]) > 0
