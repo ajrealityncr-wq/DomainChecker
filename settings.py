@@ -38,6 +38,10 @@ GODADDY_API_URL = "https://api.godaddy.com/v3/domains/check-availability"
 OPTIMIZE_FOR = "ACCURACY"
 BATCH_SIZE = 25
 TIMEOUT_SECONDS = 30
+# The token is checked with one availability request for this domain before any search runs.
+TOKEN_CHECK_DOMAIN = "example.com"
+# How long a token check result is reused before the page checks again.
+TOKEN_CHECK_TTL_SECONDS = 10 * 60
 # Every GoDaddy request from every search and recheck shares this pace, so running searches
 # together never exceeds GoDaddy's rate limit (60 requests a minute for the domains API).
 GODADDY_REQUESTS_PER_MINUTE = 50

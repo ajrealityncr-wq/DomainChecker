@@ -6,6 +6,8 @@ Start it with run_server.py, which listens on 127.0.0.1 only, then open http://1
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, Request
@@ -51,6 +53,24 @@ def create_app(check_fn: ss.CheckFn = gc.check_batch, store: ss.JobStore | None 
                screen: trademark.TrademarkScreen | None = None, static_dir: Path = STATIC_DIRECTORY) -> FastAPI:
     app = FastAPI(title="Domain Search")
     holder: dict[str, object] = {"store": store}
+    token_lock = threading.Lock()
+    token_state: dict[str, object] = {}
+
+    def token_status(refresh: bool = False) -> dict[str, object]:
+        """The GoDaddy token check. A valid result is reused for TOKEN_CHECK_TTL_SECONDS; any other
+        result is checked again next time, so a fixed token or a passing network blip is noticed at once."""
+        with token_lock:
+            fresh = (token_state.get("status") == "valid"
+                     and time.time() - float(token_state.get("checked_at", 0)) < settings.TOKEN_CHECK_TTL_SECONDS)
+            if refresh or not fresh:
+                token_state.clear()
+                token_state.update(gc.verify_token(check_fn), checked_at=time.time())
+            return dict(token_state)
+
+    def require_valid_token() -> None:
+        status = token_status()
+        if status["status"] != "valid":
+            raise HTTPException(status_code=409, detail=status["message"])
 
     def job_store() -> ss.JobStore:
         # Created on first use, so importing this module does not touch the database.
@@ -84,6 +104,11 @@ def create_app(check_fn: ss.CheckFn = gc.check_batch, store: ss.JobStore | None 
             "job_retention_days": settings.JOB_RETENTION_DAYS,
         }
 
+    @app.get("/api/token")
+    def check_token(refresh: bool = False) -> dict[str, object]:
+        """Whether the GoDaddy token works. The page checks this first and asks for a fix if it does not."""
+        return token_status(refresh)
+
     @app.post("/api/searches", status_code=202)
     def create_search(body: SearchIn) -> dict[str, str]:
         _configure_search_log()
@@ -96,6 +121,7 @@ def create_app(check_fn: ss.CheckFn = gc.check_batch, store: ss.JobStore | None 
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+        require_valid_token()
         try:
             job_id = ss.start_search(job_store(), request, check_fn, screen)
         except ss.LimitError as exc:
@@ -114,6 +140,7 @@ def create_app(check_fn: ss.CheckFn = gc.check_batch, store: ss.JobStore | None 
     def recheck_domains(body: RecheckIn) -> dict[str, object]:
         """Send the chosen domains to GoDaddy again. Only runs when the user asks for it."""
         domains = [domain.strip().lower() for domain in body.domains]
+        require_valid_token()
         try:
             return {"domains": ss.recheck(domains, check_fn)}
         except ValueError as exc:

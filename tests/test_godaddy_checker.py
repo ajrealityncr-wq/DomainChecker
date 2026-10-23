@@ -291,3 +291,47 @@ def test_request_pacer_spaces_requests_across_threads(monkeypatch):
     times.sort()
     gaps = [later - earlier for earlier, later in zip(times, times[1:])]
     assert min(gaps) >= 0.045
+
+
+def test_verify_token_reports_each_state(monkeypatch):
+    ok = lambda batch, config, pat, log: ([], None)  # noqa: E731
+
+    def rejected(batch, config, pat, log):
+        raise gc.AuthError("HTTP 401")
+
+    down = lambda batch, config, pat, log: ([], "network error: timed out")  # noqa: E731
+    monkeypatch.setattr(gc, "load_pat", lambda: None)
+    assert gc.verify_token(ok)["status"] == "missing"
+    monkeypatch.setattr(gc, "load_pat", lambda: "token")
+    assert gc.verify_token(ok) == {"status": "valid", "message": "The GoDaddy token is valid."}
+    invalid = gc.verify_token(rejected)
+    assert invalid["status"] == "invalid"
+    assert "GODADDY_PAT" in invalid["message"]
+    assert gc.verify_token(down)["status"] == "unreachable"
+
+
+def test_verify_token_asks_once_for_one_domain(monkeypatch):
+    monkeypatch.setattr(gc, "load_pat", lambda: "token")
+    calls = []
+    gc.verify_token(lambda batch, config, pat, log: (calls.append((batch, config["max_retries"])) or ([], None)))
+    assert calls == [([settings.TOKEN_CHECK_DOMAIN], 0)]
+
+
+def test_a_token_fixed_in_dotenv_is_used_without_a_restart(monkeypatch, tmp_path):
+    monkeypatch.setattr(os, "environ", {k: v for k, v in os.environ.items() if k != "GODADDY_PAT"})
+    monkeypatch.setattr(settings, "ROOT", tmp_path)
+    (tmp_path / ".env").write_text("GODADDY_PAT=old-token\n", encoding="utf-8")
+    assert gc.load_pat() == "old-token"
+    (tmp_path / ".env").write_text("GODADDY_PAT=new-token\n", encoding="utf-8")
+    assert gc.load_pat() == "new-token"
+    assert "GODADDY_PAT" not in os.environ
+
+
+def test_rejected_token_error_says_how_to_fix_it(monkeypatch):
+    class Response:
+        status_code = 401
+        ok = False
+        headers = {}
+    monkeypatch.setattr(gc.requests, "post", lambda *args, **kwargs: Response())
+    with pytest.raises(gc.AuthError, match="GODADDY_PAT=your-token"):
+        gc.check_batch(["a.com"], gc.default_config(), "token", logging.getLogger("test"))
