@@ -17,6 +17,10 @@ DEFAULT_MAX_PRICE = 5000
 MAX_PRICE_LIMIT = 1_000_000
 MAX_KEYWORD_LENGTH = 60
 CANDIDATES_PER_SEARCH = 50
+# A search keeps checking rounds of CANDIDATES_PER_SEARCH new names per extension, showing results as
+# they arrive, until the user presses Stop or the keyword runs out of names. This cap only protects the
+# GoDaddy quota from a search left running: 100 rounds is 5,000 names per extension.
+MAX_ROUNDS_PER_SEARCH = 100
 # Names generated per keyword before already-used names are removed. Large enough that
 # a repeat search still finds new names.
 CANDIDATE_POOL_PER_KEYWORD = 5000
@@ -43,10 +47,15 @@ RDAP_URL = "https://rdap.org/domain/{domain}"
 RDAP_TIMEOUT_SECONDS = 10
 RDAP_WORKERS = 10
 
-# ---- Results cache and storage --------------------------------------------
-# Availability and registration answers are reused for this long before they are checked again.
-CACHE_TTL_SECONDS = 24 * 60 * 60
-JOB_RETENTION_DAYS = 14
+# ---- Storage ----------------------------------------------------------------
+# Searches are listed in History for this long. Checked domains are kept permanently.
+JOB_RETENTION_DAYS = 365
+# Domains the "All domains" page loads per request, newest first.
+DOMAINS_PAGE_SIZE = 1000
+# Domains one recheck request may send to GoDaddy. Rechecks only happen when the user asks.
+MAX_RECHECK_DOMAINS = 25
+# Where the "Buy" link sends the user for a domain.
+BUY_URL = "https://www.godaddy.com/domainsearch/find?domainToCheck={domain}"
 APP_DATABASE = OUTPUT_DIRECTORY / "app.sqlite3"
 CHECKPOINT_FILE = OUTPUT_DIRECTORY / "checkpoint.json"
 SEARCH_LOG_FILE = OUTPUT_DIRECTORY / "search.log"
@@ -56,13 +65,18 @@ MAX_NAME_LENGTH = 18  # long keywords such as "automation" still get room for af
 MIN_NAME_LENGTH = 4
 
 # Affixes that read naturally in a domain name. Prefixes rank below suffixes.
-PREFIXES = ("my", "get", "best", "smart", "city", "global", "digital", "pro", "top", "join", "try")
+PREFIXES = (
+    "my", "get", "best", "smart", "city", "global", "digital", "pro", "top", "join", "try",
+    "go", "hey", "the", "up", "we", "neo", "next", "true", "bold", "bright",
+)
 SUFFIXES = (
     "hub", "pro", "zone", "spot", "now", "plus", "direct", "point", "app", "ly",
     "ify", "hq", "io", "site", "world", "online", "guru", "box", "bay", "wise",
     "works", "desk", "space", "cloud", "flow", "net", "link", "max", "one", "way",
     "kit", "shop", "store", "mart", "wave", "hive", "spark", "bridge", "crew",
     "team", "central", "genius", "expert", "lab", "stream", "scout", "rocket", "pal",
+    "nest", "base", "forge", "grid", "path", "sync", "dock", "nova", "port", "verse",
+    "craft", "mind", "sense", "stack", "pilot", "ware", "yard", "loop", "mate", "bit",
 )
 
 # Plural ending: automation -> automations. "-er" and "-ers" read badly ("automationers").

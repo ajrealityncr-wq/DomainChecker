@@ -131,11 +131,11 @@ def test_checked_answers_keep_prices_for_the_library():
         "brandly.com": {"available": True, "price": 0, "renewal_price": 999.0, "currency": "INR"},
         "taken.com": False,
     })
-    rows = {row["domain"]: row for row in history.library()}
+    rows = {row["domain"]: row for row in history.library()[0]}
     assert rows["brandly.com"]["price"] == 0
     assert rows["brandly.com"]["renewal_price"] == 999.0
     assert rows["brandly.com"]["keyword"] == "brand"
     assert rows["taken.com"]["available"] is False
     assert rows["taken.com"]["price"] is None
     history.release(["brandly.com", "taken.com"])
-    assert len(history.library()) == 2
+    assert history.library()[1] == 2

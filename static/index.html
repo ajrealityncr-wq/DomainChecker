@@ -6,11 +6,11 @@
   <title>Domain Search</title>
   <link rel="icon" href="data:,">
   <style>
-    :root { color-scheme: light dark; --bg: #f6f7f9; --card: #ffffff; --text: #1d2330; --muted: #5b6474; --line: #d9dde5; --accent: #1f6feb; --ok: #1a7f37; --warn: #9a6700; }
-    @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg: #0f1218; --card: #171c26; --text: #e6e9ef; --muted: #9aa3b2; --line: #2a3140; --accent: #4c9aff; --ok: #3fb950; --warn: #d29922; } }
-    :root[data-theme="dark"] { --bg: #0f1218; --card: #171c26; --text: #e6e9ef; --muted: #9aa3b2; --line: #2a3140; --accent: #4c9aff; --ok: #3fb950; --warn: #d29922; }
+    :root { color-scheme: light dark; --bg: #f6f7f9; --card: #ffffff; --text: #1d2330; --muted: #5b6474; --line: #d9dde5; --accent: #1f6feb; --ok: #1a7f37; --warn: #9a6700; --star: #bf8700; }
+    @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg: #0f1218; --card: #171c26; --text: #e6e9ef; --muted: #9aa3b2; --line: #2a3140; --accent: #4c9aff; --ok: #3fb950; --warn: #d29922; --star: #e3b341; } }
+    :root[data-theme="dark"] { --bg: #0f1218; --card: #171c26; --text: #e6e9ef; --muted: #9aa3b2; --line: #2a3140; --accent: #4c9aff; --ok: #3fb950; --warn: #d29922; --star: #e3b341; }
     body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, sans-serif; }
-    main { max-width: 1000px; margin: 0 auto; padding: 24px 16px; }
+    main { max-width: 1120px; margin: 0 auto; padding: 24px 16px; }
     h1 { font-size: 1.5rem; margin: 0 0 4px; }
     h2 { font-size: 1.1rem; margin: 0 0 12px; }
     p.lead { margin: 0 0 16px; color: var(--muted); }
@@ -31,7 +31,11 @@
     button { font: inherit; padding: 9px 16px; border: 0; border-radius: 6px; background: var(--accent); color: #fff; cursor: pointer; justify-self: start; }
     button.secondary { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
     button.link { background: transparent; color: var(--accent); padding: 0; border: 0; text-decoration: underline; }
+    button.small { font-size: 0.8rem; padding: 2px 8px; }
+    button.star { background: transparent; border: 0; padding: 0 4px; font-size: 1.1rem; line-height: 1; color: var(--muted); }
+    button.star[aria-pressed="true"] { color: var(--star); }
     button:disabled { opacity: 0.6; cursor: default; }
+    a.buy { font-size: 0.8rem; white-space: nowrap; color: var(--accent); }
     .status { color: var(--muted); min-height: 1.5em; margin-top: 12px; }
     .error { color: var(--warn); }
     .hidden { display: none !important; }
@@ -43,6 +47,8 @@
     th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; vertical-align: top; }
     th { font-size: 0.8rem; color: var(--muted); font-weight: 600; }
     td.num, th.num { text-align: right; white-space: nowrap; }
+    td.row-actions { white-space: nowrap; }
+    td.row-actions > * { margin-right: 8px; }
     .tag { font-size: 0.8rem; padding: 2px 8px; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; display: inline-block; margin: 0 4px 4px 0; }
     .in { color: var(--ok); } .out { color: var(--muted); } .warn { color: var(--warn); }
     .note { font-size: 0.85rem; color: var(--muted); margin: 12px 0 0; }
@@ -51,7 +57,12 @@
     .score { font-weight: 600; white-space: nowrap; }
     .score-notes { display: block; font-size: 0.75rem; color: var(--muted); }
     .free { color: var(--ok); font-weight: 600; }
-    @media (max-width: 560px) { .col-renewal, .col-keyword, .col-checked { display: none; } td.domain { overflow-wrap: anywhere; } .score-notes { display: none; } }
+    .progress { display: block; font-size: 0.75rem; color: var(--muted); }
+    @media (max-width: 560px) {
+      .col-renewal, .col-keyword, .col-checked, .col-total { display: none; }
+      td.domain { min-width: 8em; overflow-wrap: anywhere; }
+      .score-notes { display: none; }
+    }
   </style>
 </head>
 <body>
@@ -84,7 +95,10 @@
             </label>
           </div>
         </details>
-        <div class="wide actions"><button type="submit" id="submit">Search</button></div>
+        <div class="wide actions">
+          <button type="submit" id="submit">Search</button>
+          <button type="button" class="secondary hidden" id="stop">Stop searching</button>
+        </div>
       </form>
       <div class="status" id="status" role="status" aria-live="polite"></div>
     </section>
@@ -108,6 +122,7 @@
         </table>
       </div>
       <p class="note" id="history-empty">No searches yet.</p>
+      <p class="note" id="history-retention"></p>
     </section>
     <section class="card hidden" id="history-results">
       <h2 id="history-results-title"></h2>
@@ -119,18 +134,28 @@
   <div id="view-domains" role="tabpanel" class="hidden">
     <section class="card">
       <h2>All checked domains</h2>
-      <p class="note" style="margin-top:0">Every domain the app has checked, from every search and from the command-line checker. A domain is checked once and never sent to GoDaddy again.</p>
+      <p class="note" style="margin-top:0">Every domain the app has checked, from every search and from the command-line checker. A domain is sent to GoDaddy once; use <strong>Recheck</strong> to ask GoDaddy again for its current availability and price.</p>
       <div class="results-panel" style="margin-top:12px"></div>
+      <div class="actions" style="margin-top:12px">
+        <span class="count" id="domains-loaded"></span>
+        <button type="button" class="secondary hidden" id="load-more">Load more</button>
+      </div>
+      <p class="notice hidden" id="recheck-notice"></p>
     </section>
   </div>
 
-  <p class="note">Prices are indicative GoDaddy prices; confirm availability and price at checkout. Trademarks are not checked.</p>
+  <p class="note">Prices are indicative GoDaddy prices; confirm availability and price at checkout. "3-year cost" is the first year plus two renewals. Trademarks are not checked.</p>
 </main>
 
 <script>
   let currency = "INR";
   let lastRequest = null;
   let pollTimer = null;
+  let currentJob = null;
+  let shownOffers = -1;
+  let historyTimer = null;
+  const shortlist = new Set();
+  const panels = [];
 
   // ---------- small helpers ----------
   function el(tag, props = {}, ...children) {
@@ -149,55 +174,102 @@
     return new Date(seconds * 1000).toLocaleString();
   }
   function tag(text, className) { return el("span", { className: `tag ${className}`, textContent: text }); }
+  function threeYear(row) {
+    return typeof row.price === "number" && typeof row.renewal_price === "number" ? row.price + 2 * row.renewal_price : null;
+  }
+  // Remembered filter choices; the page works the same when storage is unavailable.
+  function loadSaved(key) {
+    try { return JSON.parse(localStorage.getItem(key) || "{}"); } catch { return {}; }
+  }
+  function save(key, value) {
+    try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* storage unavailable */ }
+  }
+
+  async function toggleStar(domain) {
+    const starred = !shortlist.has(domain);
+    const response = await fetch(`/api/shortlist/${encodeURIComponent(domain)}`, {
+      method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ starred }),
+    });
+    if (!response.ok) return;
+    if (starred) shortlist.add(domain); else shortlist.delete(domain);
+    for (const panel of panels) panel.render();
+  }
 
   // ---------- results panel: filters, sort, table, export ----------
   // Used by Search, History and All domains, so results look and filter the same everywhere.
-  function createResultsPanel(container, { showTaken = false, showKeyword = false, showChecked = false } = {}) {
+  function createResultsPanel(container, { storageKey, showTaken = false, showKeyword = false, showChecked = false, onRecheck = null } = {}) {
     let rows = [];
-    const priceMode = el("select", {}, el("option", { value: "any", textContent: "Any price" }),
-      el("option", { value: "free", textContent: "Free only" }), el("option", { value: "under", textContent: "Under an amount" }));
-    const priceMax = el("input", { type: "number", min: 0, step: "any", placeholder: "amount", disabled: true });
+    const saved = loadSaved(storageKey);
+    const priceMode = el("select", {},
+      el("option", { value: "any", textContent: "Any price" }),
+      el("option", { value: "free", textContent: "Free first year" }),
+      el("option", { value: "under", textContent: "First year under" }),
+      el("option", { value: "total", textContent: "3-year cost under" }));
+    const priceMax = el("input", { type: "number", min: 0, step: "any", placeholder: "amount" });
     const tld = el("select", {}, el("option", { value: "", textContent: "All extensions" }));
     const minScore = el("select", {}, ...[0, 60, 70, 80, 90].map(v => el("option", { value: v, textContent: v ? `${v}+` : "Any" })));
     const text = el("input", { type: "text", placeholder: "contains…" });
     const sort = el("select", {},
-      el("option", { value: "price", textContent: "Cheapest first" }),
+      el("option", { value: "price", textContent: "Cheapest first year" }),
+      el("option", { value: "total", textContent: "Lowest 3-year cost" }),
       el("option", { value: "brand", textContent: "Best brand first" }),
       el("option", { value: "name", textContent: "Name A–Z" }),
       ...(showChecked ? [el("option", { value: "newest", textContent: "Newest first" })] : []));
     const includeTaken = el("input", { type: "checkbox" });
+    const starredOnly = el("input", { type: "checkbox" });
     const count = el("span", { className: "count" });
     const exportButton = el("button", { type: "button", className: "secondary", textContent: "Export CSV" });
     const body = el("tbody");
 
+    // Restore remembered choices.
+    priceMode.value = saved.priceMode || "any";
+    priceMax.value = saved.priceMax ?? "";
+    minScore.value = saved.minScore ?? "0";
+    if (saved.sort && [...sort.options].some(o => o.value === saved.sort)) sort.value = saved.sort;
+    includeTaken.checked = Boolean(saved.includeTaken);
+    starredOnly.checked = Boolean(saved.starredOnly);
+    priceMax.disabled = !["under", "total"].includes(priceMode.value);
+
     const filters = el("div", { className: "filters" },
-      el("label", {}, "Price", priceMode), el("label", {}, "Max price", priceMax),
+      el("label", {}, "Price", priceMode), el("label", {}, "Amount", priceMax),
       el("label", {}, "Extension", tld), el("label", {}, "Min brand score", minScore),
       el("label", {}, "Name", text), el("label", {}, "Sort", sort));
-    const headers = ["Domain", ...(showKeyword ? ["Keyword"] : []), "Brand", "Price", "Renewal", "Status", ...(showChecked ? ["Checked"] : [])];
-    const headClass = { Keyword: "col-keyword", Price: "num", Renewal: "num col-renewal", Checked: "col-checked" };
+    const headers = ["", "Domain", ...(showKeyword ? ["Keyword"] : []), "Brand", "Price", "Renewal", "3-year cost", "Status",
+      ...(showChecked ? ["Checked"] : []), ""];
+    const headClass = { Keyword: "col-keyword", Price: "num", Renewal: "num col-renewal", "3-year cost": "num col-total", Checked: "col-checked" };
     const head = el("tr", {}, ...headers.map(h => el("th", { textContent: h, className: headClass[h] || "" })));
     const table = el("div", { className: "table-wrap" }, el("table", {}, el("thead", {}, head), body));
-    const bar = el("div", { className: "actions", style: "margin-bottom:8px" }, count, exportButton);
+    const bar = el("div", { className: "actions", style: "margin-bottom:8px" },
+      el("label", { className: "inline" }, starredOnly, "Starred only"), count, exportButton);
     if (showTaken) bar.prepend(el("label", { className: "inline" }, includeTaken, "Include taken"));
     container.replaceChildren(filters, bar, table);
+
+    function remember() {
+      save(storageKey, { priceMode: priceMode.value, priceMax: priceMax.value, minScore: minScore.value, sort: sort.value,
+        includeTaken: includeTaken.checked, starredOnly: starredOnly.checked });
+    }
 
     function visible() {
       const needle = text.value.trim().toLowerCase();
       const limit = priceMax.value === "" ? null : Number(priceMax.value);
-      let list = rows.filter(row => {
+      const list = rows.filter(row => {
         if (!includeTaken.checked && row.available === false) return false;
+        if (starredOnly.checked && !shortlist.has(row.domain)) return false;
         if (tld.value && row.tld !== tld.value) return false;
         if ((row.brand_score ?? 0) < Number(minScore.value)) return false;
         if (needle && !row.domain.includes(needle)) return false;
         if (priceMode.value === "free" && Number(row.price) !== 0) return false;
         if (priceMode.value === "under" && limit !== null && !(typeof row.price === "number" && row.price <= limit)) return false;
+        if (priceMode.value === "total" && limit !== null && !(threeYear(row) !== null && threeYear(row) <= limit)) return false;
         return true;
       });
       const byPrice = (a, b) => (a.price ?? Infinity) - (b.price ?? Infinity);
+      const byTotal = (a, b) => (threeYear(a) ?? Infinity) - (threeYear(b) ?? Infinity);
+      const byBrand = (a, b) => (b.brand_score ?? 0) - (a.brand_score ?? 0);
       const sorters = {
-        price: (a, b) => byPrice(a, b) || (b.brand_score - a.brand_score) || a.domain.localeCompare(b.domain),
-        brand: (a, b) => (b.brand_score - a.brand_score) || byPrice(a, b) || a.domain.localeCompare(b.domain),
+        price: (a, b) => byPrice(a, b) || byBrand(a, b) || a.domain.localeCompare(b.domain),
+        total: (a, b) => byTotal(a, b) || byBrand(a, b) || a.domain.localeCompare(b.domain),
+        brand: (a, b) => byBrand(a, b) || byPrice(a, b) || a.domain.localeCompare(b.domain),
         name: (a, b) => a.domain.localeCompare(b.domain),
         newest: (a, b) => (b.checked_at ?? 0) - (a.checked_at ?? 0),
       };
@@ -213,48 +285,97 @@
       return td;
     }
 
+    function actionsCell(row) {
+      const td = el("td", { className: "row-actions" });
+      if (row.available !== false && row.buy_url) {
+        td.append(el("a", { className: "buy", href: row.buy_url, target: "_blank", rel: "noopener noreferrer", textContent: "Buy ↗" }));
+      }
+      if (onRecheck) {
+        const button = el("button", { type: "button", className: "secondary small", textContent: "Recheck" });
+        button.addEventListener("click", async () => {
+          button.disabled = true; button.textContent = "Checking…";
+          await onRecheck([row.domain]);
+          button.disabled = false; button.textContent = "Recheck";
+        });
+        td.append(button);
+      }
+      return td;
+    }
+
+    function starCell(row) {
+      const on = shortlist.has(row.domain);
+      const button = el("button", { type: "button", className: "star", textContent: on ? "★" : "☆",
+        title: on ? "Remove from shortlist" : "Add to shortlist" });
+      button.setAttribute("aria-pressed", String(on));
+      button.setAttribute("aria-label", `${on ? "Remove" : "Add"} ${row.domain} ${on ? "from" : "to"} shortlist`);
+      button.addEventListener("click", () => toggleStar(row.domain));
+      return el("td", {}, button);
+    }
+
     function render() {
       const list = visible();
       body.replaceChildren(...list.map(row => el("tr", {},
+        starCell(row),
         el("td", { className: "domain", textContent: row.domain }),
         ...(showKeyword ? [el("td", { className: "col-keyword", textContent: row.keyword || "—" })] : []),
-        el("td", {}, el("span", { className: "score", textContent: `${row.brand_score}/100` }),
+        el("td", {}, el("span", { className: "score", textContent: `${row.brand_score ?? "—"}/100` }),
           el("span", { className: "score-notes", textContent: row.brand_notes?.length ? row.brand_notes.join(", ") : "short and clear" })),
         el("td", { className: `num${Number(row.price) === 0 ? " free" : ""}`, textContent: money(row.price, row.currency) }),
         el("td", { className: "num col-renewal", textContent: money(row.renewal_price, row.currency) }),
+        el("td", { className: "num col-total", textContent: money(threeYear(row), row.currency) }),
         statusCell(row),
         ...(showChecked ? [el("td", { className: "col-checked", textContent: when(row.checked_at) })] : []),
+        actionsCell(row),
       )));
       count.textContent = `Showing ${list.length} of ${rows.length}`;
     }
 
     function exportCsv() {
       const list = visible();
-      const columns = ["domain", "keyword", "available", "price", "renewal_price", "currency", "brand_score", "brand_notes", "within_budget"];
-      const quote = value => `"${String(value ?? "").replace(/"/g, '""')}"`;
-      const lines = [columns.join(","), ...list.map(row => columns.map(c => quote(Array.isArray(row[c]) ? row[c].join("; ") : row[c])).join(","))];
+      const columns = ["domain", "keyword", "available", "price", "renewal_price", "three_year_cost", "currency", "brand_score", "brand_notes", "within_budget", "starred", "buy_url"];
+      // Leading = + - @ would make a spreadsheet treat the cell as a formula.
+      const quote = value => `"${String(value ?? "").replace(/^([=+\-@])/, "'$1").replace(/"/g, '""')}"`;
+      const value = (row, column) => column === "three_year_cost" ? threeYear(row)
+        : column === "starred" ? shortlist.has(row.domain)
+        : Array.isArray(row[column]) ? row[column].join("; ") : row[column];
+      const lines = [columns.join(","), ...list.map(row => columns.map(c => quote(value(row, c))).join(","))];
       const link = el("a", { href: URL.createObjectURL(new Blob([lines.join("\n")], { type: "text/csv" })), download: "domains.csv" });
       document.body.append(link); link.click(); link.remove();
     }
 
-    priceMode.addEventListener("change", () => { priceMax.disabled = priceMode.value !== "under"; render(); });
-    for (const input of [priceMax, tld, minScore, text, sort, includeTaken]) input.addEventListener("input", render);
+    priceMode.addEventListener("change", () => { priceMax.disabled = !["under", "total"].includes(priceMode.value); render(); });
+    for (const input of [priceMode, priceMax, tld, minScore, text, sort, includeTaken, starredOnly]) {
+      input.addEventListener("input", () => { render(); remember(); });
+    }
     exportButton.addEventListener("click", exportCsv);
 
-    return {
+    const panel = {
+      render,
       setRows(newRows) {
         rows = newRows.map(row => ({ ...row, tld: row.tld || "." + row.domain.split(".").pop() }));
+        const current = tld.value || saved.tld || "";
         const extensions = [...new Set(rows.map(row => row.tld))].sort();
         tld.replaceChildren(el("option", { value: "", textContent: "All extensions" }),
           ...extensions.map(ext => el("option", { value: ext, textContent: ext })));
+        tld.value = extensions.includes(current) ? current : "";
         render();
       },
+      updateRows(updated) {
+        const byDomain = new Map(updated.map(row => [row.domain, row]));
+        panel.setRows(rows.map(row => byDomain.get(row.domain) || row));
+      },
+      rowCount() { return rows.length; },
     };
+    tld.addEventListener("input", () => save(storageKey, { ...loadSaved(storageKey), tld: tld.value }));
+    panels.push(panel);
+    return panel;
   }
 
-  const searchPanel = createResultsPanel(document.querySelector("#search-results .results-panel"));
-  const historyPanel = createResultsPanel(document.querySelector("#history-results .results-panel"));
-  const domainsPanel = createResultsPanel(document.querySelector("#view-domains .results-panel"), { showTaken: true, showKeyword: true, showChecked: true });
+  const searchPanel = createResultsPanel(document.querySelector("#search-results .results-panel"), { storageKey: "filters-search" });
+  const historyPanel = createResultsPanel(document.querySelector("#history-results .results-panel"), { storageKey: "filters-history" });
+  const domainsPanel = createResultsPanel(document.querySelector("#view-domains .results-panel"), {
+    storageKey: "filters-domains", showTaken: true, showKeyword: true, showChecked: true, onRecheck: recheck,
+  });
 
   // ---------- tabs ----------
   function show(view) {
@@ -264,6 +385,7 @@
     for (const name of ["search", "history", "domains"]) {
       document.getElementById(`view-${name}`).classList.toggle("hidden", name !== view);
     }
+    clearTimeout(historyTimer);
     if (view === "history") loadHistory();
     if (view === "domains") loadDomains();
   }
@@ -278,6 +400,7 @@
   const resultsCard = document.getElementById("search-results");
   const failedNotice = document.getElementById("failed-notice");
   const runAgain = document.getElementById("run-again");
+  const stopButton = document.getElementById("stop");
 
   function setStatus(text, isError = false) { statusEl.textContent = text; statusEl.classList.toggle("error", isError); }
   function progressText(job) {
@@ -285,7 +408,29 @@
     const detail = job.total ? ` (${job.checked} of ${job.total})` : "";
     return `${job.stage || "Working"}${detail}…`;
   }
-  function finish() { submit.disabled = false; runAgain.classList.remove("hidden"); }
+  function finish() {
+    submit.disabled = false;
+    runAgain.classList.remove("hidden");
+    stopButton.classList.add("hidden");
+    currentJob = null;
+  }
+  function withinBudget(job) { return job.offers.filter(offer => offer.within_budget === true).length; }
+  function foundText(job) {
+    const found = `${job.offers.length} available`;
+    return job.max_price !== null || job.max_renewal_price !== null ? `${found}, ${withinBudget(job)} within budget` : found;
+  }
+  function doneText(job) {
+    let text = `${job.stopped ? "Stopped" : "Done"}. Checked ${job.names_checked ?? job.total} names; ${foundText(job)}.`;
+    if (job.names_exhausted) text += " No new names are left for this keyword; try another keyword or extension.";
+    return text;
+  }
+  function showOffers(job) {
+    // Rows are only rebuilt when new names arrive, so filters and scrolling stay put.
+    if (job.offers.length === shownOffers) return;
+    shownOffers = job.offers.length;
+    searchPanel.setRows(job.offers.map(offer => ({ ...offer, available: true, keyword: job.keyword })));
+    resultsCard.classList.toggle("hidden", job.offers.length === 0);
+  }
 
   async function poll(jobId) {
     try {
@@ -294,8 +439,9 @@
       const job = await response.json();
       if (job.status === "done") {
         clearInterval(pollTimer);
-        setStatus(`Done. ${job.offers.length} available domains found.`);
-        searchPanel.setRows(job.offers.map(offer => ({ ...offer, available: true, keyword: job.keyword })));
+        setStatus(doneText(job));
+        shownOffers = -1;
+        showOffers(job);
         resultsCard.classList.remove("hidden");
         failedNotice.classList.toggle("hidden", !(job.failed && job.failed.length));
         failedNotice.textContent = `${(job.failed || []).length} names could not be checked because GoDaddy did not answer. Run again to retry them.`;
@@ -305,7 +451,10 @@
         setStatus(job.error || "The search failed.", true);
         finish();
       } else {
-        setStatus(progressText(job));
+        showOffers(job);
+        const found = job.status === "running" ? ` · ${foundText(job)} so far` : "";
+        const hint = job.stop_requested ? " Stopping after this batch…" : " The search continues until you press Stop.";
+        setStatus(`${progressText(job)}${found}.${hint}`);
       }
     } catch (error) {
       clearInterval(pollTimer);
@@ -324,6 +473,9 @@
     submit.disabled = true;
     runAgain.classList.add("hidden");
     resultsCard.classList.add("hidden");
+    shownOffers = -1;
+    stopButton.disabled = false;
+    stopButton.textContent = "Stop searching";
     setStatus("Starting…");
     try {
       const response = await fetch("/api/searches", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -332,6 +484,8 @@
         throw new Error(typeof problem.detail === "string" ? problem.detail : "Check the form and try again.");
       }
       const { id } = await response.json();
+      currentJob = id;
+      stopButton.classList.remove("hidden");
       clearInterval(pollTimer);
       pollTimer = setInterval(() => poll(id), 1500);
       poll(id);
@@ -353,15 +507,32 @@
     });
   });
   runAgain.addEventListener("click", () => { if (lastRequest) startSearch(lastRequest); });
+  stopButton.addEventListener("click", async () => {
+    if (!currentJob) return;
+    stopButton.disabled = true;
+    stopButton.textContent = "Stopping…";
+    await fetch(`/api/searches/${currentJob}/stop`, { method: "POST" });
+  });
 
   // ---------- history ----------
+  function historyStatus(search) {
+    const td = el("td", {}, tag(search.status, search.status === "done" ? "in" : search.status === "failed" ? "warn" : "out"));
+    if (search.status === "queued" || search.status === "running") {
+      td.append(el("span", { className: "progress", textContent: search.total ? `${search.stage} · ${search.checked} of ${search.total}` : (search.stage || "") }));
+    } else if (search.status === "failed" && search.error) {
+      td.append(el("span", { className: "progress", textContent: search.error }));
+    }
+    return td;
+  }
+
   async function loadHistory() {
     const response = await fetch("/api/searches");
     const { searches } = await response.json();
     const rowsEl = document.getElementById("history-rows");
     document.getElementById("history-empty").classList.toggle("hidden", searches.length > 0);
     rowsEl.replaceChildren(...searches.map(search => {
-      const view = el("button", { type: "button", className: "link", textContent: "View results", disabled: search.status !== "done" });
+      const view = el("button", { type: "button", className: "link", textContent: "View results",
+        disabled: search.status === "failed" || search.status === "queued" });
       view.addEventListener("click", () => openSearch(search));
       return el("tr", {},
         el("td", { textContent: when(search.created_at) }),
@@ -369,32 +540,71 @@
         el("td", { textContent: search.tlds.join(" ") }),
         el("td", { className: "num", textContent: search.available }),
         el("td", { className: "num", textContent: search.max_price === null ? "—" : search.within_budget }),
-        el("td", { className: "num", textContent: money(search.cheapest) }),
-        el("td", {}, tag(search.status, search.status === "done" ? "in" : search.status === "failed" ? "warn" : "out")),
+        el("td", { className: "num", textContent: money(search.cheapest, search.currency) }),
+        historyStatus(search),
         el("td", {}, view));
     }));
+    // Keep the list live while a search is running and this tab is open.
+    clearTimeout(historyTimer);
+    const running = searches.some(search => search.status === "queued" || search.status === "running");
+    const visible = !document.getElementById("view-history").classList.contains("hidden");
+    if (running && visible) historyTimer = setTimeout(loadHistory, 2000);
   }
 
   async function openSearch(search) {
     const response = await fetch(`/api/searches/${search.id}`);
     const job = await response.json();
-    document.getElementById("history-results-title").textContent = `"${job.keyword}" · ${when(job.created_at)}`;
+    const live = job.status === "running" ? " · still running, found so far" : "";
+    document.getElementById("history-results-title").textContent = `"${job.keyword}" · ${when(job.created_at)}${live}`;
     historyPanel.setRows(job.offers.map(offer => ({ ...offer, available: true, keyword: job.keyword })));
     document.getElementById("history-results").classList.remove("hidden");
   }
 
   // ---------- all domains ----------
-  async function loadDomains() {
-    const response = await fetch("/api/domains");
+  const loadMore = document.getElementById("load-more");
+  const recheckNotice = document.getElementById("recheck-notice");
+  let loadedDomains = [];
+  let totalDomains = 0;
+
+  function showLoaded() {
+    document.getElementById("domains-loaded").textContent = loadedDomains.length < totalDomains
+      ? `Loaded the newest ${loadedDomains.length} of ${totalDomains} checked domains.`
+      : `All ${totalDomains} checked domains loaded.`;
+    loadMore.classList.toggle("hidden", loadedDomains.length >= totalDomains);
+  }
+
+  async function loadDomains(offset = 0) {
+    const response = await fetch(`/api/domains?offset=${offset}`);
     const data = await response.json();
-    domainsPanel.setRows(data.domains);
+    loadedDomains = offset === 0 ? data.domains : [...loadedDomains, ...data.domains];
+    totalDomains = data.total;
+    domainsPanel.setRows(loadedDomains);
+    showLoaded();
+  }
+  loadMore.addEventListener("click", () => loadDomains(loadedDomains.length));
+
+  async function recheck(domains) {
+    recheckNotice.classList.add("hidden");
+    const response = await fetch("/api/domains/recheck", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ domains }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      recheckNotice.textContent = typeof data.detail === "string" ? data.detail : "The recheck failed.";
+      recheckNotice.classList.remove("hidden");
+      return;
+    }
+    const byDomain = new Map(data.domains.map(row => [row.domain, row]));
+    loadedDomains = loadedDomains.map(row => byDomain.get(row.domain) || row);
+    domainsPanel.updateRows(data.domains);
   }
 
   // ---------- start ----------
   (async function init() {
     try {
-      const response = await fetch("/api/config");
-      const config = await response.json();
+      const [configResponse, shortlistResponse] = await Promise.all([fetch("/api/config"), fetch("/api/shortlist")]);
+      const config = await configResponse.json();
+      for (const domain of (await shortlistResponse.json()).domains) shortlist.add(domain);
       currency = config.currency || currency;
       const fieldset = document.getElementById("tlds");
       for (const ext of config.tlds) {
@@ -402,6 +612,8 @@
         fieldset.append(el("label", {}, input, ` ${ext}`));
       }
       document.getElementById("max_price").placeholder = `e.g. ${config.default_max_price}`;
+      document.getElementById("history-retention").textContent =
+        `Searches are listed here for ${config.job_retention_days} days. Their domains stay in All domains permanently.`;
     } catch (error) {
       setStatus("Could not load settings from the server.", true);
     }

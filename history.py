@@ -8,6 +8,7 @@ A name is released only when it was generated but never answered, so it can be t
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
 import time
@@ -24,6 +25,9 @@ EXTRA_COLUMNS = (
     ("price", "REAL"),
     ("renewal_price", "REAL"),
     ("currency", "TEXT"),
+    ("brand_score", "INTEGER"),
+    ("brand_notes", "TEXT"),
+    ("starred", "INTEGER"),
 )
 
 
@@ -73,15 +77,22 @@ class DomainHistory:
         )
         return {domain: bool(available) for domain, available in rows}
 
-    def mark_seen(self, domains: list[str], keyword: str | None = None) -> None:
+    def mark_seen(self, domains: list[str], keyword: str | None = None,
+                  brand: dict[str, tuple[int, list[str]]] | None = None) -> None:
+        """Record generated names, with the keyword and brand score (score, notes) they were made for."""
         if not domains:
             return
         now = time.time()
+        brand = brand or {}
+        rows = []
+        for d in domains:
+            score, notes = brand.get(d, (None, None))
+            rows.append((d, now, keyword, score, None if notes is None else json.dumps(notes)))
         with self._lock:
             db = self._connect()
             try:
-                db.executemany("INSERT OR IGNORE INTO seen_domains (domain, first_seen, keyword) VALUES (?, ?, ?)",
-                               [(d, now, keyword) for d in domains])
+                db.executemany("INSERT OR IGNORE INTO seen_domains (domain, first_seen, keyword, brand_score, brand_notes)"
+                               " VALUES (?, ?, ?, ?, ?)", rows)
                 db.commit()
             finally:
                 db.close()
@@ -128,22 +139,55 @@ class DomainHistory:
             finally:
                 db.close()
 
-    def library(self) -> list[dict[str, Any]]:
-        """Every domain with a known answer, newest first."""
+    def library(self, limit: int | None = None, offset: int = 0,
+                domains: list[str] | None = None) -> tuple[list[dict[str, Any]], int]:
+        """Domains with a known answer, newest first, and how many there are in total.
+
+        With `domains`, only those domains (at most CHUNK of them) are returned.
+        """
+        where = "checked_at IS NOT NULL"
+        params: list[Any] = []
+        if domains is not None:
+            params = list(domains[:CHUNK])
+            where += f" AND domain IN ({','.join('?' * len(params))})"
         with self._lock:
             db = self._connect()
             try:
+                total = db.execute(f"SELECT COUNT(*) FROM seen_domains WHERE {where}", params).fetchone()[0]
                 rows = db.execute(
-                    "SELECT domain, keyword, available, price, renewal_price, currency, checked_at FROM seen_domains"
-                    " WHERE checked_at IS NOT NULL ORDER BY checked_at DESC, domain"
+                    "SELECT domain, keyword, available, price, renewal_price, currency, checked_at, brand_score, brand_notes,"
+                    f" starred FROM seen_domains WHERE {where} ORDER BY checked_at DESC, domain LIMIT ? OFFSET ?",
+                    [*params, -1 if limit is None else limit, offset],
                 ).fetchall()
             finally:
                 db.close()
         return [
             {"domain": domain, "keyword": keyword, "available": bool(available), "price": price,
-             "renewal_price": renewal_price, "currency": currency, "checked_at": checked_at}
-            for domain, keyword, available, price, renewal_price, currency, checked_at in rows
-        ]
+             "renewal_price": renewal_price, "currency": currency, "checked_at": checked_at,
+             "brand_score": brand_score, "brand_notes": None if brand_notes is None else json.loads(brand_notes),
+             "starred": bool(starred)}
+            for domain, keyword, available, price, renewal_price, currency, checked_at, brand_score, brand_notes, starred in rows
+        ], total
+
+    def set_starred(self, domain: str, starred: bool) -> bool:
+        """Add a domain to the shortlist or remove it. False when the domain is not in the record."""
+        with self._lock:
+            db = self._connect()
+            try:
+                changed = db.execute("UPDATE seen_domains SET starred = ? WHERE domain = ?", (int(starred), domain)).rowcount
+                db.commit()
+            finally:
+                db.close()
+        return changed > 0
+
+    def starred(self) -> list[str]:
+        with self._lock:
+            db = self._connect()
+            try:
+                rows = db.execute("SELECT domain FROM seen_domains WHERE starred = 1 ORDER BY domain").fetchall()
+            finally:
+                db.close()
+        return [row[0] for row in rows]
 
 
 def _number(value: Any) -> float | None:
