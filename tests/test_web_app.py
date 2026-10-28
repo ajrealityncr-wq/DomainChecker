@@ -9,6 +9,7 @@ import settings
 import web_app
 
 LOCAL = "http://127.0.0.1:8000"
+REAL_LOAD_PAT = gc.load_pat  # the client fixture replaces load_pat; the token tests need the real one
 
 
 def fake_check(batch, config, pat, logger):
@@ -247,7 +248,7 @@ def test_search_is_refused_until_the_token_is_valid(client_with_bad_token):
     assert status["status"] == "invalid"
     response = client_with_bad_token.post("/api/searches", json={"keyword": "real estate", "tlds": [".com"]})
     assert response.status_code == 409
-    assert "GODADDY_PAT" in response.json()["detail"]
+    assert "token box" in response.json()["detail"]
     assert client_with_bad_token.get("/api/searches").json()["searches"] == []
 
 
@@ -275,3 +276,61 @@ def test_a_valid_token_check_is_reused(client, monkeypatch):
     assert calls == []
     client.get("/api/token?refresh=true")
     assert calls == [1]
+
+
+def test_token_saved_from_the_page_is_used_for_searches(client, monkeypatch, tmp_path):
+    import os
+    monkeypatch.setattr(gc, "load_pat", REAL_LOAD_PAT)  # the saved value must be found by the real loader
+    assert client.get("/api/token").json()["status"] == "missing"
+    saved = client.post("/api/token", json={"pat": "good-token-123456"})
+    assert saved.status_code == 200
+    body = saved.json()
+    assert body["status"] == "valid"
+    assert body["masked"] == "…3456"
+    assert "good-token-123456" not in saved.text  # the full token is never sent back
+    assert "GODADDY_PAT=good-token-123456" in (tmp_path / ".env").read_text(encoding="utf-8")
+    assert os.environ["GODADDY_PAT"] == "good-token-123456"
+    assert client.post("/api/searches", json={"keyword": "real estate", "tlds": [".com"]}).status_code == 202
+
+
+def test_token_that_fails_the_check_is_not_saved(client, monkeypatch, tmp_path):
+    monkeypatch.setattr(gc, "load_pat", REAL_LOAD_PAT)
+    def rejected(batch, config, pat, logger):
+        raise gc.AuthError("HTTP 401")
+    app = web_app.create_app(check_fn=rejected, store=ss.JobStore(tmp_path / "app.sqlite3"))
+    bad = TestClient(app, base_url=LOCAL)
+    response = bad.post("/api/token", json={"pat": "wrong-token-000000"})
+    assert response.status_code == 422
+    assert "not saved" in response.json()["detail"]
+    assert "wrong-token-000000" not in response.text
+    assert not (tmp_path / ".env").exists()
+
+
+def test_token_is_not_saved_when_goddaddy_cannot_be_reached(client, monkeypatch, tmp_path):
+    monkeypatch.setattr(gc, "load_pat", REAL_LOAD_PAT)
+    def down(batch, config, pat, logger):
+        return [], "network error: timed out"
+    app = web_app.create_app(check_fn=down, store=ss.JobStore(tmp_path / "app.sqlite3"))
+    response = TestClient(app, base_url=LOCAL).post("/api/token", json={"pat": "some-token-000000"})
+    assert response.status_code == 503
+    assert not (tmp_path / ".env").exists()
+
+
+def test_removing_the_token_refuses_searches_again(client, monkeypatch):
+    monkeypatch.setattr(gc, "load_pat", REAL_LOAD_PAT)
+    client.post("/api/token", json={"pat": "good-token-123456"})
+    assert client.delete("/api/token").json()["status"] == "missing"
+    assert client.post("/api/searches", json={"keyword": "real estate", "tlds": [".com"]}).status_code == 409
+
+
+def test_a_short_token_is_refused_before_checking(client, monkeypatch):
+    monkeypatch.setattr(gc, "load_pat", REAL_LOAD_PAT)
+    assert client.post("/api/token", json={"pat": "short"}).status_code == 422
+
+
+def test_full_token_never_appears_in_status(client, monkeypatch):
+    monkeypatch.setattr(gc, "load_pat", REAL_LOAD_PAT)
+    client.post("/api/token", json={"pat": "good-token-123456"})
+    status = client.get("/api/token").json()
+    assert status["masked"] == "…3456"
+    assert "good-token" not in str(status)

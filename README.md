@@ -16,9 +16,11 @@ pip install -r requirements.txt
 Copy-Item .env.example .env
 ```
 
-Put your GoDaddy Personal Access Token in `.env` as `GODADDY_PAT=...`, or set it as an environment variable. The token is never written to files or logs. Do not commit `.env`.
+**Easiest:** open the app and paste your GoDaddy Personal Access Token into the token box. The app checks it with GoDaddy, saves it, and uses it for every search and recheck. Only the last four characters are shown afterwards. **Change token** replaces it and **Remove token** forgets it.
 
-**The token is checked first.** When the app starts and when the page opens, it sends one small availability request to GoDaddy with your token. If the token is missing, or GoDaddy rejects it, the page says what to fix and Search stays disabled. Fix the token in `.env` and press **Check again**; there is no need to restart the app.
+You can also put it in `.env` as `GODADDY_PAT=...`, or set it as an environment variable. A token set as an environment variable takes precedence over `.env` when the app starts. Do not commit `.env`.
+
+**The token is checked first.** When the app starts and when the page opens, it sends one small availability request to GoDaddy with your token. If the token is missing, or GoDaddy rejects it, the page says what to fix and Search stays disabled. Paste a new token into the box and press **Save token**; there is no need to restart the app.
 
 ## Use the web app
 
@@ -35,7 +37,7 @@ docker build -t domain-search .
 docker run --rm -p 127.0.0.1:8000:8000 --env-file .env -v "${PWD}/output:/app/output" domain-search
 ```
 
-Then open http://127.0.0.1:8000. Keep `127.0.0.1:` in the `-p` option, so the app stays reachable from this computer only. The `output` folder keeps your searches and checked domains between runs.
+Then open http://127.0.0.1:8000. Keep `127.0.0.1:` in the `-p` option, so the app stays reachable from this computer only. The `output` folder keeps your searches and checked domains between runs. A token saved from the page inside the container lasts only until the container stops, so pass the token with `--env-file` instead.
 
 `.app` and `.dev` domains only work over HTTPS; browsers require it for these extensions.
 
@@ -72,7 +74,7 @@ Every results table shows the first-year price, the renewal price, and the **3-y
 - **Keyword** (All domains only): the keywords the names came from
 - **Shortlist:** starred
 
-Within a group, a name matches when it has any selected option (`.com` or `.in`). Across groups, a name must match every group that has a selection: available **and** first year under ₹300 **and** `.com` or `.in`. Each button shows how many names it would show with your other selections. **Clear all filters** turns them all off. There are also filters for minimum brand score and name, and a sort order (cheapest first year, lowest 3-year cost, best brand, name, or newest). The page remembers your filter choices. **Export CSV** downloads the rows that match the filters.
+Within a group, a name matches when it has any selected option (`.com` or `.in`). Across groups, a name must match every group that has a selection: available **and** first year under ₹300 **and** `.com` or `.in`. Each button shows how many names it would show with your other selections. **Clear all filters** turns them all off. When a search has a budget (a maximum price), its results open with **Within budget** selected, so only available names within your budget are shown; select Over budget or Not available to see the others. There are also filters for minimum brand score and name, and a sort order (cheapest first year, lowest 3-year cost, best brand, name, or newest). The page remembers your filter choices. **Export CSV** downloads the rows that match the filters.
 
 On every row:
 

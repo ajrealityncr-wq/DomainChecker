@@ -58,8 +58,15 @@
     .score-notes { display: block; font-size: 0.75rem; color: var(--muted); }
     .free { color: var(--ok); font-weight: 600; }
     .token-card { border-color: var(--warn); }
+    .token-card.ok { border-color: var(--line); }
+    .token-card.ok h2 { color: var(--ok); }
+    .token-form input[type="password"] { font: inherit; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); width: 100%; max-width: 420px; }
+    .token-form label { display: grid; gap: 4px; }
+    .token-field { display: flex; gap: 8px; align-items: center; max-width: 520px; }
+    .token-field input { flex: 1; min-width: 0; }
     .token-card h2 { color: var(--warn); }
     .filter-groups { display: grid; gap: 8px; margin-bottom: 12px; }
+    .budget-note { margin: 0 0 8px; color: var(--ok); }
     .chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
     .group-title { font-size: 0.8rem; color: var(--muted); min-width: 6.5em; }
     button.chip { font-size: 0.85rem; padding: 4px 12px; border-radius: 999px; background: transparent; color: var(--text); border: 1px solid var(--line); }
@@ -77,13 +84,29 @@
   <h1>Domain Search</h1>
   <p class="lead">Find available, brand-like domain names for a keyword, see what they cost, and keep every result.</p>
 
-  <section class="card token-card" id="token-card" role="alert">
+  <section class="card token-card" id="token-card" aria-live="polite">
     <h2 id="token-title">Checking your GoDaddy token…</h2>
     <p id="token-message" style="margin:0 0 12px"></p>
-    <div class="actions">
-      <button type="button" id="token-recheck" class="hidden">Check again</button>
+    <form class="token-form hidden" id="token-form" autocomplete="off">
+      <label>GoDaddy Personal Access Token
+        <span class="token-field">
+          <input type="password" id="token-input" name="pat" autocomplete="off" spellcheck="false" autocapitalize="off" maxlength="500" required>
+          <button type="button" class="secondary small" id="token-toggle" aria-controls="token-input" aria-pressed="false">Show</button>
+        </span>
+      </label>
+      <div class="actions">
+        <button type="submit" id="token-save">Save token</button>
+        <button type="button" class="secondary hidden" id="token-cancel">Cancel</button>
+      </div>
+      <p class="note" style="margin-top:8px">The token is checked with GoDaddy, then saved on this computer and used for every search. It is never shown again in full.</p>
+    </form>
+    <div class="actions" id="token-actions">
+      <button type="button" id="token-recheck" class="secondary hidden">Check again</button>
+      <button type="button" id="token-change" class="secondary hidden">Change token</button>
+      <button type="button" id="token-remove" class="secondary hidden">Remove token</button>
       <span class="count" id="token-checked"></span>
     </div>
+    <p class="notice hidden" id="token-error" role="alert"></p>
   </section>
 
   <nav class="tabs" role="tablist">
@@ -299,8 +322,9 @@
     const head = el("tr", {}, ...headers.map(h => el("th", { textContent: h, className: headClass[h] || "" })));
     const table = el("div", { className: "table-wrap" }, el("table", {}, el("thead", {}, head), body));
     const bar = el("div", { className: "actions", style: "margin-bottom:8px" }, count, exportButton);
+    const budgetNote = el("p", { className: "note budget-note hidden" });
     buildGroups();
-    container.replaceChildren(filters, groupsEl, bar, table);
+    container.replaceChildren(filters, groupsEl, budgetNote, bar, table);
 
     function remember() {
       save(storageKey, { amount: amount.value, minScore: minScore.value, sort: sort.value,
@@ -340,6 +364,9 @@
         }
       }
       clearAll.classList.toggle("hidden", [...selected.values()].every(set => set.size === 0));
+      const budget = selected.get("budget");
+      budgetNote.classList.toggle("hidden", !(budget.size === 1 && budget.has("within")));
+      budgetNote.textContent = "Showing only available names within your budget. Names over budget or not available are hidden; select Over budget or Not available to see them too.";
     }
 
     function visible() {
@@ -463,6 +490,11 @@
         panel.setRows(rows.map(row => byDomain.get(row.domain) || row));
       },
       rowCount() { return rows.length; },
+      // A search with a budget opens showing only names within it; one without a budget shows everything.
+      useBudgetFilter(hasBudget) {
+        selected.set("budget", new Set(hasBudget ? ["within"] : []));
+        render();
+      },
     };
     panels.push(panel);
     return panel;
@@ -513,9 +545,9 @@
   }
   function withinBudget(job) { return job.offers.filter(offer => offer.within_budget === true).length; }
   function foundText(job) {
-    let found = `${job.offers.length} available`;
-    if (job.max_price !== null || job.max_renewal_price !== null) found += ` (${withinBudget(job)} within budget)`;
-    return `${found}, ${(job.taken || []).length} not available`;
+    const rest = `${job.offers.length} available, ${(job.taken || []).length} not available`;
+    // With a budget, the number that matters is how many names fit it.
+    return job.max_price !== null || job.max_renewal_price !== null ? `${withinBudget(job)} within your budget (${rest})` : rest;
   }
   // Every name the search generated and checked: the available ones and the ones that are not.
   function checkedNames(job) {
@@ -530,7 +562,14 @@
     if (job.names_exhausted) text += " No new names are left for this keyword; try another keyword or extension.";
     return text;
   }
+  const hasBudget = job => job.max_price !== null || job.max_renewal_price !== null;
+  let budgetFilterFor = null;  // the search whose budget filter was set up
+
   function showOffers(job) {
+    if (budgetFilterFor !== job.id) {
+      budgetFilterFor = job.id;
+      searchPanel.useBudgetFilter(hasBudget(job));
+    }
     // Rows are only rebuilt when new names arrive, so filters and scrolling stay put.
     const names = checkedNames(job);
     if (names.length === shownOffers) return;
@@ -719,6 +758,7 @@
     const job = await response.json();
     const live = job.status === "running" ? " · still running, found so far" : "";
     document.getElementById("history-results-title").textContent = `"${job.keyword}" · ${when(job.created_at)}${live}`;
+    historyPanel.useBudgetFilter(hasBudget(job));
     historyPanel.setRows(checkedNames(job));
     document.getElementById("history-results").classList.remove("hidden");
   }
@@ -765,13 +805,57 @@
 
   // ---------- GoDaddy token: checked first; searching waits until it is valid ----------
   let tokenOk = false;
+  let tokenSaved = null;  // last four characters of the saved token, or null
   const tokenCard = document.getElementById("token-card");
   const tokenRecheck = document.getElementById("token-recheck");
+  const tokenForm = document.getElementById("token-form");
+  const tokenInput = document.getElementById("token-input");
+  const tokenError = document.getElementById("token-error");
+  const tokenChange = document.getElementById("token-change");
+  const tokenRemove = document.getElementById("token-remove");
+  const tokenCancel = document.getElementById("token-cancel");
+  const tokenSave = document.getElementById("token-save");
+  const tokenToggle = document.getElementById("token-toggle");
   const tokenTitles = {
     missing: "Add your GoDaddy token to start",
     invalid: "Your GoDaddy token needs fixing",
     unreachable: "Could not check your GoDaddy token",
   };
+
+  function hideToken() {
+    tokenInput.type = "password";
+    tokenToggle.textContent = "Show";
+    tokenToggle.setAttribute("aria-pressed", "false");
+  }
+
+  function showTokenForm(show) {
+    tokenForm.classList.toggle("hidden", !show);
+    tokenCancel.classList.toggle("hidden", !show || !tokenOk);
+    if (show) tokenInput.focus(); else { tokenInput.value = ""; hideToken(); }
+  }
+
+  // Shows the saved token's last four characters only; the full token is never sent to the page.
+  function renderToken(status) {
+    tokenOk = status.status === "valid";
+    tokenSaved = status.masked || null;
+    tokenCard.classList.toggle("ok", tokenOk);
+    document.getElementById("token-title").textContent = tokenOk
+      ? `GoDaddy token saved (${tokenSaved})`
+      : tokenTitles[status.status] || "Your GoDaddy token needs fixing";
+    document.getElementById("token-message").textContent = tokenOk
+      ? "Searches and rechecks use this token. Change or remove it at any time."
+      : status.message;
+    document.getElementById("token-checked").textContent = status.checked_at ? `Last checked ${when(status.checked_at)}` : "";
+    tokenForm.classList.toggle("hidden", tokenOk);
+    tokenChange.classList.toggle("hidden", !tokenOk);
+    tokenRemove.classList.toggle("hidden", !tokenSaved);
+    tokenRecheck.classList.toggle("hidden", !tokenOk);
+    tokenCancel.classList.add("hidden");
+    tokenRecheck.disabled = false;
+    tokenRecheck.textContent = "Check again";
+    if (!currentJob) submit.disabled = !tokenOk;
+    submit.title = tokenOk ? "" : "Fix the GoDaddy token first";
+  }
 
   async function checkToken(refresh = false) {
     tokenRecheck.disabled = true;
@@ -783,19 +867,57 @@
     } catch {
       status = { status: "unreachable", message: "Could not reach the app server. Make sure it is running, then check again." };
     }
-    tokenOk = status.status === "valid";
-    tokenCard.classList.toggle("hidden", tokenOk);
-    document.getElementById("token-title").textContent = tokenTitles[status.status] || "Your GoDaddy token needs fixing";
-    document.getElementById("token-message").textContent = status.message;
-    document.getElementById("token-checked").textContent = status.checked_at ? `Last checked ${when(status.checked_at)}` : "";
-    tokenRecheck.classList.remove("hidden");
-    tokenRecheck.disabled = false;
-    tokenRecheck.textContent = "Check again";
-    if (!currentJob) submit.disabled = !tokenOk;
-    submit.title = tokenOk ? "" : "Fix the GoDaddy token first";
+    renderToken(status);
     return tokenOk;
   }
   tokenRecheck.addEventListener("click", () => checkToken(true));
+  tokenChange.addEventListener("click", () => showTokenForm(true));
+  tokenCancel.addEventListener("click", () => { showTokenForm(false); tokenError.classList.add("hidden"); renderToken({ status: "valid", masked: tokenSaved }); });
+
+  // Show or hide what is typed in the token box. Display only: nothing is sent or stored.
+  tokenToggle.addEventListener("click", () => {
+    const showing = tokenInput.type === "text";
+    tokenInput.type = showing ? "password" : "text";
+    tokenToggle.textContent = showing ? "Show" : "Hide";
+    tokenToggle.setAttribute("aria-pressed", String(!showing));
+    tokenInput.focus();
+  });
+
+  tokenForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const pat = tokenInput.value.trim();
+    if (!pat) return;
+    tokenSave.disabled = true;
+    tokenSave.textContent = "Checking with GoDaddy…";
+    tokenError.classList.add("hidden");
+    try {
+      const response = await fetch("/api/token", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pat }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        tokenError.textContent = typeof data.detail === "string" ? data.detail : "The token could not be saved.";
+        tokenError.classList.remove("hidden");
+        return;
+      }
+      tokenInput.value = "";
+      hideToken();
+      renderToken(data);
+    } catch {
+      tokenError.textContent = "Could not reach the app server. The token was not saved.";
+      tokenError.classList.remove("hidden");
+    } finally {
+      tokenSave.disabled = false;
+      tokenSave.textContent = "Save token";
+    }
+  });
+
+  tokenRemove.addEventListener("click", async () => {
+    if (!confirm("Remove the saved GoDaddy token? Searches stop until you save a new one.")) return;
+    await fetch("/api/token", { method: "DELETE" });
+    showTokenForm(false);
+    checkToken(true);
+  });
 
   // ---------- start ----------
   submit.disabled = true;  // until the token check passes
