@@ -306,7 +306,7 @@ def test_verify_token_reports_each_state(monkeypatch):
     assert gc.verify_token(ok) == {"status": "valid", "message": "The GoDaddy token is valid."}
     invalid = gc.verify_token(rejected)
     assert invalid["status"] == "invalid"
-    assert "GODADDY_PAT" in invalid["message"]
+    assert "token box" in invalid["message"]
     assert gc.verify_token(down)["status"] == "unreachable"
 
 
@@ -333,5 +333,5 @@ def test_rejected_token_error_says_how_to_fix_it(monkeypatch):
         ok = False
         headers = {}
     monkeypatch.setattr(gc.requests, "post", lambda *args, **kwargs: Response())
-    with pytest.raises(gc.AuthError, match="GODADDY_PAT=your-token"):
+    with pytest.raises(gc.AuthError, match="token box"):
         gc.check_batch(["a.com"], gc.default_config(), "token", logging.getLogger("test"))

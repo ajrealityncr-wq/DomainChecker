@@ -38,6 +38,10 @@ class StarIn(BaseModel):
     starred: bool
 
 
+class TokenIn(BaseModel):
+    pat: str = Field(min_length=8, max_length=500)
+
+
 def _configure_search_log() -> None:
     """Write search warnings and errors to output/search.log as well as the console."""
     if any(isinstance(handler, logging.FileHandler) for handler in logging.getLogger("search").handlers):
@@ -104,10 +108,37 @@ def create_app(check_fn: ss.CheckFn = gc.check_batch, store: ss.JobStore | None 
             "job_retention_days": settings.JOB_RETENTION_DAYS,
         }
 
+    def token_response(refresh: bool = False) -> dict[str, object]:
+        status = dict(token_status(refresh))
+        status["masked"] = gc.mask_pat(gc.load_pat())  # last four characters only
+        return status
+
     @app.get("/api/token")
     def check_token(refresh: bool = False) -> dict[str, object]:
         """Whether the GoDaddy token works. The page checks this first and asks for a fix if it does not."""
-        return token_status(refresh)
+        return token_response(refresh)
+
+    @app.post("/api/token")
+    def save_token(body: TokenIn) -> dict[str, object]:
+        """Check a token with GoDaddy and, only if it works, save it for every search and recheck."""
+        pat = body.pat.strip()
+        status = gc.verify_token(check_fn, pat=pat)
+        if status["status"] == "unreachable":
+            raise HTTPException(status_code=503, detail=status["message"] + " The token was not saved.")
+        if status["status"] != "valid":
+            raise HTTPException(status_code=422, detail=status["message"] + " The token was not saved.")
+        with token_lock:
+            gc.save_pat(pat)
+            token_state.clear()
+        return token_response(refresh=True)
+
+    @app.delete("/api/token")
+    def remove_token() -> dict[str, object]:
+        """Forget the saved token. Searches are refused until a new one is saved."""
+        with token_lock:
+            gc.remove_pat()
+            token_state.clear()
+        return token_response(refresh=True)
 
     @app.post("/api/searches", status_code=202)
     def create_search(body: SearchIn) -> dict[str, str]:

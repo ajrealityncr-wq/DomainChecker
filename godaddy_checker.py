@@ -27,9 +27,9 @@ import settings
 from history import DomainHistory
 
 try:
-    from dotenv import dotenv_values
+    from dotenv import dotenv_values, set_key, unset_key
 except ImportError:  # pragma: no cover - requirements.txt installs this package
-    dotenv_values = None
+    dotenv_values = set_key = unset_key = None
 
 
 DOMAIN_RE = re.compile(
@@ -192,18 +192,48 @@ def load_pat() -> str | None:
 
 
 TOKEN_HELP = (
-    "Create a Personal Access Token in your GoDaddy developer account, put it in the .env file next to "
-    "the app as GODADDY_PAT=your-token (or set the GODADDY_PAT environment variable), then check again."
+    "Create a Personal Access Token in your GoDaddy developer account, then paste it into the token box "
+    "on this page and press Save."
 )
 
 
-def verify_token(check_fn: Callable[..., Any] | None = None) -> dict[str, str]:
-    """Check the GoDaddy token with one availability request.
+def mask_pat(pat: str | None) -> str | None:
+    """Only the last four characters, for display. The full token is never sent back to the page."""
+    return f"…{pat[-4:]}" if pat and len(pat) > 4 else None
+
+
+def save_pat(pat: str) -> None:
+    """Store the token in the project's .env file and use it straight away in this process.
+
+    The file is restricted to its owner where the system allows it. The value is never logged.
+    """
+    env_file = settings.ROOT / ".env"
+    if set_key is None:
+        raise RuntimeError("python-dotenv is not installed; cannot save the token")
+    env_file.touch(exist_ok=True)
+    set_key(str(env_file), "GODADDY_PAT", pat, quote_mode="never")
+    try:
+        env_file.chmod(0o600)
+    except OSError:  # pragma: no cover - not every file system supports it (e.g. Windows)
+        pass
+    os.environ["GODADDY_PAT"] = pat
+
+
+def remove_pat() -> None:
+    """Forget the saved token, both in the .env file and in this process."""
+    env_file = settings.ROOT / ".env"
+    if unset_key is not None and env_file.exists():
+        unset_key(str(env_file), "GODADDY_PAT")
+    os.environ.pop("GODADDY_PAT", None)
+
+
+def verify_token(check_fn: Callable[..., Any] | None = None, pat: str | None = None) -> dict[str, str]:
+    """Check a GoDaddy token with one availability request (the saved token unless `pat` is given).
 
     Returns {"status", "message"}. Status is "valid", "missing" (no token set), "invalid" (GoDaddy
     rejected it) or "unreachable" (GoDaddy could not be asked; the token may still be fine).
     """
-    pat = load_pat()
+    pat = pat if pat is not None else load_pat()
     if not pat:
         return {"status": "missing", "message": f"The GoDaddy token is not set. {TOKEN_HELP}"}
     # One quick try: a token check should answer in seconds, not wait through every retry.

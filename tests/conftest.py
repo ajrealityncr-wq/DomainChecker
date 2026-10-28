@@ -32,3 +32,12 @@ def no_request_pacing(monkeypatch):
     """Tests never wait for the shared GoDaddy request pace."""
     import godaddy_checker
     monkeypatch.setattr(godaddy_checker.pacer, "wait", lambda: None)
+
+
+@pytest.fixture(autouse=True)
+def isolated_token_store(tmp_path, monkeypatch):
+    """Saving a token writes .env and the environment; tests use their own copies, never the real ones."""
+    import os
+    import settings
+    monkeypatch.setattr(settings, "ROOT", tmp_path)
+    monkeypatch.setattr(os, "environ", {k: v for k, v in os.environ.items() if k != "GODADDY_PAT"})
